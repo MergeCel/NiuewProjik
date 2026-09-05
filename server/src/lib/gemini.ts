@@ -15,8 +15,9 @@ const MODEL_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-
 export function extractJson(text: string): string {
   const t = text.trim();
   // Direct JSON
-  if (t.startsWith("{") || t.startsWith("[")) return t;
-  // JSON object
+  if (t.startsWith("{") && t.endsWith("}")) return t;
+  if (t.startsWith("[") && t.endsWith("]")) return t;
+  // JSON object - greedy match to LAST brace (handles braces inside strings)
   const objMatch = t.match(/\{[\s\S]*\}/);
   if (objMatch) return objMatch[0];
   // JSON array
@@ -41,7 +42,7 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
         generationConfig: {
           responseMimeType: "application/json",
           temperature: 0.3,
-          maxOutputTokens: 1024,
+          maxOutputTokens: 2048,
         },
       });
 
@@ -64,8 +65,13 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
     } catch (e) {
       lastError = e;
       console.warn(`Gemini model ${modelName} failed:`, (e as Error).message);
+      // treat truncated/invalid output as NO_TRADE so analyze still succeeds
+      const msg = String((e as Error).message);
+      if (msg.includes("Unterminated string") || msg.includes("Expected")) {
+        return { direction: "NO_TRADE", entry: null, sl: null, tp: null, confidence: 0, reasoning: `Gemini ${modelName} returned invalid JSON; treated as no-trade`, rr: null };
+      }
       // try next fallback
-      if (String((e as Error).message).includes("429")) {
+      if (msg.includes("429")) {
         // rate limit, wait briefly
         await new Promise((r) => setTimeout(r, 2000));
       }
