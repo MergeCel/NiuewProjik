@@ -35,13 +35,19 @@ export default function App() {
 
   const fetchData = async () => {
     try {
+      const fetchJson = async (url: string) => {
+        const r = await fetch(url);
+        const text = await r.text();
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${text.slice(0, 200)}`);
+        try { return JSON.parse(text); } catch { throw new Error(`API returned HTML (check Vercel deploy / Basic Auth): ${text.slice(0, 120)}`); }
+      };
       const [sRes, sigRes] = await Promise.all([
-        fetch("/api/signals/stats").then((r) => r.json()),
-        fetch("/api/signals?limit=50").then((r) => r.json()),
+        fetchJson("/api/signals/stats"),
+        fetchJson("/api/signals?limit=50"),
       ]);
-      if (sRes.error) throw new Error(sRes.error);
-      setStats(sRes);
-      setSignals(Array.isArray(sigRes) ? sigRes : sigRes.error ? [] : sigRes);
+      if ((sRes as any).error) throw new Error((sRes as any).error);
+      setStats(sRes as any);
+      setSignals(Array.isArray(sigRes) ? sigRes as any : (sigRes as any).error ? [] : sigRes as any);
     } catch (e: any) {
       setError(e.message);
     } finally {
