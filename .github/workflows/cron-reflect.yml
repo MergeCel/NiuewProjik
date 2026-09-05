@@ -1,0 +1,17 @@
+name: cron-reflect-weekly
+on:
+  schedule:
+    - cron: "0 0 * * 0" # Sunday 00:00 UTC
+  workflow_dispatch:
+
+jobs:
+  reflect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call reflect endpoint
+        run: |
+          curl -s -X POST "${{ secrets.APP_URL }}/api/cron/reflect" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            --fail --show-error
+          echo "Reflect done"

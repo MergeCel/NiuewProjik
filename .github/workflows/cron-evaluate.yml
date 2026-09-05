@@ -1,0 +1,17 @@
+name: cron-evaluate-1h
+on:
+  schedule:
+    - cron: "5 * * * *" # 5 minutes after analyze
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call evaluate endpoint
+        run: |
+          curl -s -X POST "${{ secrets.APP_URL }}/api/cron/evaluate?symbol=BTCUSDT" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            --fail --show-error
+          echo "Evaluate done"

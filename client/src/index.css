@@ -1,0 +1,12 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #0a0e13; color: #e5e7eb; }
+a { color: #60a5fa; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #1f2937; padding: 8px 10px; text-align: left; font-size: 13px; }
+th { background: #111827; }
+tr:nth-child(even) { background: #0f172a; }
+.card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 16px; }
+.badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.badge-win { background: #065f46; color: #6ee7b7; }
+.badge-loss { background: #7f1d1d; color: #fca5a5; }
+.badge-active { background: #1e40af; color: #93c5fd; }

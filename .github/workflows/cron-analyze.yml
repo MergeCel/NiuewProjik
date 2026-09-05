@@ -1,0 +1,17 @@
+name: cron-analyze-1h
+on:
+  schedule:
+    - cron: "0 * * * *" # every 1 hour
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call analyze endpoint
+        run: |
+          curl -s -X POST "${{ secrets.APP_URL }}/api/cron/analyze?symbol=BTCUSDT&interval=1h" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            --fail --show-error
+          echo "Analyze done"
