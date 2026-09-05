@@ -1,10 +1,10 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { supabase } from "../lib/supabase.js";
 
 const router = Router();
 
 // GET /api/signals - list recent
-router.get("/", async (req, res) => {
+router.get("/", async (req: Request, res: Response) => {
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
   const { data, error } = await supabase
     .from("signals")
@@ -16,7 +16,7 @@ router.get("/", async (req, res) => {
 });
 
 // GET /api/signals/stats
-router.get("/stats", async (req, res) => {
+router.get("/stats", async (_req: Request, res: Response) => {
   const { data: signals, error } = await supabase.from("signals").select("*, outcomes(result, pnl_pips)");
   if (error) return res.status(500).json({ error: error.message });
 
@@ -41,7 +41,7 @@ router.get("/stats", async (req, res) => {
 });
 
 // GET /api/signals/:id
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req: Request, res: Response) => {
   const { data, error } = await supabase.from("signals").select("*, outcomes(*)").eq("id", req.params.id).single();
   if (error) return res.status(404).json({ error: error.message });
   res.json(data);

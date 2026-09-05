@@ -4,6 +4,7 @@ import { computeIndicators, shouldCallLLM } from "../lib/indicators.js";
 import { buildPrompt, callGemini } from "../lib/gemini.js";
 import { supabase } from "../lib/supabase.js";
 import { cronAuth } from "../middleware/auth.js";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const router = Router();
 
@@ -228,7 +229,6 @@ router.post("/reflect", cronAuth, async (req, res) => {
 
     let lesson = "No lesson generated";
     try {
-      const { GoogleGenerativeAI } = await import("@google/generative-ai");
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
       const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-2.0-flash" });
       const result = await model.generateContent(lessonPrompt);
