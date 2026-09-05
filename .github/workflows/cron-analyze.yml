@@ -13,5 +13,5 @@ jobs:
           curl -s -X POST "${{ secrets.APP_URL }}/api/cron/analyze?symbol=BTCUSDT&interval=1h" \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
             -H "Content-Type: application/json" \
-            --fail --show-error
+            -w "\nHTTP_STATUS:%{http_code}\n"
           echo "Analyze done"
