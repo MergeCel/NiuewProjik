@@ -5,5 +5,4 @@ dist
 .vercel
 .DS_Store
 *.log
-client/dist
 server/dist

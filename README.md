@@ -18,11 +18,12 @@ cp .env server/.env  # isi GEMINI_API_KEY, SUPABASE_URL, SERVICE_ROLE, CRON_SECR
 # 2. DB
 # Copy supabase/schema.sql -> Supabase SQL Editor -> Run
 
-# 3. Install & Dev
-npm install --prefix server
-npm install --prefix client
-npm run dev:server  # http://localhost:3001
-npm run dev:client  # http://localhost:5173 (proxy /api -> 3001)
+# 3. Install & Dev (monorepo: root = Vite app, workspace = server)
+npm install
+npm run dev          # server :3001 + client :5173 (proxy /api -> 3001)
+# atau terpisah:
+npm run dev:server   # http://localhost:3001
+npm run dev:client   # http://localhost:5173
 ```
 
 ## Env Wajib
@@ -32,8 +33,8 @@ npm run dev:client  # http://localhost:5173 (proxy /api -> 3001)
 `BINANCE_API_KEY` + `BINANCE_API_SECRET` — **tidak wajib** untuk POC (public klines di `server/src/lib/binance.ts:1` tanpa key). Isi hanya jika setelah 1 bulan kena rate limit IP share Vercel atau mau upgrade ke private endpoints (balance/order). Server sudah handle header `X-MBX-APIKEY` otomatis jika env ada.
 
 ## Deploy Vercel (Gratis)
-1. Push ke GitHub, import ke Vercel, set Env vars yang sama + `VERCEL=1`
-2. `vercel.json` sudah set `X-Robots-Tag: noindex` global
+1. Push ke GitHub, import ke Vercel (framework **Vite**, Root Directory = repo root, `vite.config.ts` di root), set Env vars yang sama + `VERCEL=1`
+2. `vercel.json` sudah set `buildCommand` (`npm run build`), `outputDirectory: dist`, rewrites `/api/*` -> function, dan `X-Robots-Tag: noindex` global
 3. Test: `curl -u admin:pass https://your-app.vercel.app/api/signals/stats`
 
 ## GitHub Actions Secrets (Repo Settings -> Secrets)
