@@ -28,6 +28,9 @@ npm run dev:client  # http://localhost:5173 (proxy /api -> 3001)
 ## Env Wajib
 `GEMINI_API_KEY` dari aistudio.google.com (Free 1500 req/hari), `GEMINI_MODEL=gemini-2.0-flash`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET` (random 32 char), `ADMIN_USER`, `ADMIN_PASS`
 
+## Env Opsional Mitigasi >1 Bulan
+`BINANCE_API_KEY` + `BINANCE_API_SECRET` — **tidak wajib** untuk POC (public klines di `server/src/lib/binance.ts:1` tanpa key). Isi hanya jika setelah 1 bulan kena rate limit IP share Vercel atau mau upgrade ke private endpoints (balance/order). Server sudah handle header `X-MBX-APIKEY` otomatis jika env ada.
+
 ## Deploy Vercel (Gratis)
 1. Push ke GitHub, import ke Vercel, set Env vars yang sama + `VERCEL=1`
 2. `vercel.json` sudah set `X-Robots-Tag: noindex` global
