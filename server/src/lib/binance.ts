@@ -21,7 +21,7 @@ export async function fetchKlines(
   interval = "1h",
   limit = 200
 ): Promise<Kline[]> {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  const url = `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const res = await fetch(url, { headers: binanceHeaders() });
   if (!res.ok) {
     throw new Error(`Binance error ${res.status}: ${await res.text()}`);
@@ -39,7 +39,7 @@ export async function fetchKlines(
 }
 
 export async function fetchCurrentPrice(symbol = "BTCUSDT"): Promise<number> {
-  const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`;
+  const url = `https://data-api.binance.vision/api/v3/ticker/price?symbol=${symbol}`;
   const res = await fetch(url, { headers: binanceHeaders() });
   if (!res.ok) throw new Error(`Binance price error ${res.status}`);
   const data = (await res.json()) as { price: string };
