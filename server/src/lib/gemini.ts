@@ -10,13 +10,13 @@ export interface GeminiSignal {
   rr: number | null;
 }
 
-const MODEL_FALLBACKS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash"];
+const MODEL_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview"];
 
 export async function callGemini(prompt: string, modelOverride?: string): Promise<GeminiSignal> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
-  const preferred = modelOverride || process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const preferred = modelOverride || process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const modelsToTry = [preferred, ...MODEL_FALLBACKS.filter((m) => m !== preferred)];
 
   let lastError: any;

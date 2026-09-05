@@ -4,7 +4,7 @@ POC 1 bulan: hanya provide Entry / SL / TP, learning dari 10 loss terakhir + wee
 
 ## Stack
 - **Client:** Vite React TS + Recharts, `robots.txt Disallow + noindex`
-- **Server:** Express TS, Binance API, technicalindicators, Gemini 2.0-flash (fallback 1.5), Supabase
+- **Server:** Express TS, Binance API (data-api.binance.vision), technicalindicators, Gemini 2.5-flash (fallback flash-lite / 3-flash-preview), Supabase
 - **Cron:** GitHub Actions 1H (gratis, bypass Vercel Hobby 1/day limit)
 - **Hosting:** Vercel (single deploy), Supabase Free
 - **Auth:** Basic Auth + CRON_SECRET + X-Robots-Tag noindex
@@ -27,7 +27,7 @@ npm run dev:client   # http://localhost:5173
 ```
 
 ## Env Wajib
-`GEMINI_API_KEY` dari aistudio.google.com (Free 1500 req/hari), `GEMINI_MODEL=gemini-2.0-flash`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET` (random 32 char), `ADMIN_USER`, `ADMIN_PASS`
+`GEMINI_API_KEY` dari aistudio.google.com (Free), `GEMINI_MODEL=gemini-2.5-flash`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET` (random 32 char), `ADMIN_USER`, `ADMIN_PASS`
 
 ## Env Opsional Mitigasi >1 Bulan
 `BINANCE_API_KEY` + `BINANCE_API_SECRET` — **tidak wajib** untuk POC (public klines di `server/src/lib/binance.ts:1` tanpa key). Isi hanya jika setelah 1 bulan kena rate limit IP share Vercel atau mau upgrade ke private endpoints (balance/order). Server sudah handle header `X-MBX-APIKEY` otomatis jika env ada.

@@ -101,7 +101,7 @@ router.post("/analyze", cronAuth, async (req, res) => {
         tp: geminiResult.tp,
         confidence: geminiResult.confidence,
         reasoning: geminiResult.reasoning,
-        llm_model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+        llm_model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
         status,
         raw_prompt: prompt,
         raw_response: geminiResult,
@@ -230,7 +230,7 @@ router.post("/reflect", cronAuth, async (req, res) => {
     let lesson = "No lesson generated";
     try {
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-      const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-2.0-flash" });
+      const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-2.5-flash" });
       const result = await model.generateContent(lessonPrompt);
       const text = result.response.text().replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(text);
