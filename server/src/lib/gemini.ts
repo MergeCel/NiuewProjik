@@ -12,6 +12,19 @@ export interface GeminiSignal {
 
 const MODEL_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview"];
 
+export function extractJson(text: string): string {
+  const t = text.trim();
+  // Direct JSON
+  if (t.startsWith("{") || t.startsWith("[")) return t;
+  // JSON object
+  const objMatch = t.match(/\{[\s\S]*\}/);
+  if (objMatch) return objMatch[0];
+  // JSON array
+  const arrMatch = t.match(/\[[\s\S]*\]/);
+  if (arrMatch) return arrMatch[0];
+  return t;
+}
+
 export async function callGemini(prompt: string, modelOverride?: string): Promise<GeminiSignal> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
@@ -34,8 +47,8 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
 
       const result = await model.generateContent(prompt);
       const text = result.response.text();
-      // Clean possible markdown fences
-      const cleaned = text.replace(/```json|```/g, "").trim();
+      // Clean possible markdown fences and extract JSON robustly
+      const cleaned = extractJson(text);
       const parsed = JSON.parse(cleaned) as GeminiSignal;
 
       // Validate

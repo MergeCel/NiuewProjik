@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { fetchKlines, fetchCurrentPrice } from "../lib/binance.js";
 import { computeIndicators, shouldCallLLM } from "../lib/indicators.js";
-import { buildPrompt, callGemini } from "../lib/gemini.js";
+import { buildPrompt, callGemini, extractJson } from "../lib/gemini.js";
 import { supabase } from "../lib/supabase.js";
 import { cronAuth } from "../middleware/auth.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -232,8 +232,8 @@ router.post("/reflect", cronAuth, async (req, res) => {
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
       const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-2.5-flash" });
       const result = await model.generateContent(lessonPrompt);
-      const text = result.response.text().replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(text);
+      const text = result.response.text();
+      const parsed = JSON.parse(extractJson(text));
       lesson = parsed.lesson || text.slice(0, 500);
     } catch (e) {
       console.warn("reflect gemini fail", e);
