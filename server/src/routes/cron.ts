@@ -5,14 +5,18 @@ import { buildPrompt, callGemini, extractJson } from "../lib/gemini.js";
 import { supabase } from "../lib/supabase.js";
 import { cronAuth } from "../middleware/auth.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { isSupportedPair, formatPair } from "../lib/pairs.js";
 
 const router = Router();
 
 // POST /api/cron/analyze - create new signal (1H)
 router.post("/analyze", cronAuth, async (req, res) => {
-  const symbol = (req.query.symbol as string) || "BTCUSDT";
+  const symbol = ((req.query.symbol as string) || "BTCUSDT").toUpperCase();
   const interval = (req.query.interval as string) || "1h";
   try {
+    if (!isSupportedPair(symbol)) {
+      return res.status(400).json({ error: `Unsupported pair ${symbol}` });
+    }
     const klines = await fetchKlines(symbol, interval, 200);
     const closes = klines.map((k) => k.close);
     const highs = klines.map((k) => k.high);
@@ -73,6 +77,7 @@ router.post("/analyze", cronAuth, async (req, res) => {
     }
 
     const prompt = buildPrompt({
+      pair: formatPair(symbol),
       price: ind.price,
       rsi: ind.rsi,
       ema50: ind.ema50,
@@ -120,8 +125,11 @@ router.post("/analyze", cronAuth, async (req, res) => {
 
 // POST /api/cron/evaluate - check active signals hit SL/TP
 router.post("/evaluate", cronAuth, async (req, res) => {
-  const symbol = (req.query.symbol as string) || "BTCUSDT";
+  const symbol = ((req.query.symbol as string) || "BTCUSDT").toUpperCase();
   try {
+    if (!isSupportedPair(symbol)) {
+      return res.status(400).json({ error: `Unsupported pair ${symbol}` });
+    }
     const price = await fetchCurrentPrice(symbol);
     const { data: active, error } = await supabase
       .from("signals")

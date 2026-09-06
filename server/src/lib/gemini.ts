@@ -81,6 +81,7 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
 }
 
 export function buildPrompt(params: {
+  pair: string;
   price: number;
   rsi: number | null;
   ema50: number | null;
@@ -103,9 +104,9 @@ export function buildPrompt(params: {
 
   const lesson = params.weeklyLesson || "Belum ada lesson mingguan.";
 
-  return `You are a BTC/USDT 1H swing trader. Task: provide entry, stop loss, take profit ONLY if confidence >=70. RR minimal 1:1.5.
+  return `You are a ${params.pair} 1H swing trader. Task: provide entry, stop loss, take profit ONLY if confidence >=70. RR minimal 1:1.5.
 
-MARKET DATA (Binance 1H):
+MARKET DATA (Binance 1H, ${params.pair}):
 Price: ${params.price}
 RSI(14): ${params.rsi?.toFixed(2) ?? "n/a"}
 EMA50: ${params.ema50?.toFixed(2) ?? "n/a"}

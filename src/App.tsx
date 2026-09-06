@@ -32,8 +32,10 @@ export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [pairs, setPairs] = useState<string[]>(["ALL"]);
+  const [selectedPair, setSelectedPair] = useState("ALL");
 
-  const fetchData = async () => {
+  const fetchData = async (pair: string = selectedPair) => {
     try {
       const fetchJson = async (url: string) => {
         const r = await fetch(url);
@@ -41,12 +43,14 @@ export default function App() {
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${text.slice(0, 200)}`);
         try { return JSON.parse(text); } catch { throw new Error(`API returned HTML (check Vercel deploy / Basic Auth): ${text.slice(0, 120)}`); }
       };
+      const pairQ = pair && pair !== "ALL" ? `?pair=${pair}` : "";
       const [sRes, sigRes] = await Promise.all([
-        fetchJson("/api/signals/stats"),
-        fetchJson("/api/signals?limit=50"),
+        fetchJson(`/api/signals/stats${pairQ}`),
+        fetchJson(`/api/signals?limit=100${pairQ}`),
       ]);
       if ((sRes as any).error) throw new Error((sRes as any).error);
       setStats(sRes as any);
+      if ((sRes as any).pairs && (sRes as any).pairs.length) setPairs(["ALL", ...(sRes as any).pairs]);
       setSignals(Array.isArray(sigRes) ? sigRes as any : (sigRes as any).error ? [] : sigRes as any);
     } catch (e: any) {
       setError(e.message);
@@ -55,10 +59,17 @@ export default function App() {
     }
   };
 
+  const changePair = (pair: string) => {
+    setSelectedPair(pair);
+    setLoading(true);
+    fetchData(pair);
+  };
+
   useEffect(() => {
-    fetchData();
-    const id = setInterval(fetchData, 60000);
+    fetchData("ALL");
+    const id = setInterval(() => fetchData(), 60000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (loading) return <div style={{ padding: 24 }}>Loading...</div>;
@@ -82,11 +93,27 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 20 }}>
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>BTC Trading Bot — Private Dashboard</h1>
-      <p style={{ color: "#9ca3af", fontSize: 13, marginBottom: 16 }}>
-        Pair BTCUSDT 1H • Gemini {(import.meta as any).env?.VITE_GEMINI_MODEL || "2.0-flash"} • Cron 1H •
-        <span style={{ color: "#fbbf24" }}> NoIndex Active</span>
-      </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 22, marginBottom: 4 }}>AI Trading Bot — Private Dashboard</h1>
+          <p style={{ color: "#9ca3af", fontSize: 13, marginBottom: 16 }}>
+            Multi-Pair 1H • Gemini 2.5-flash • Cron 1H •
+            <span style={{ color: "#fbbf24" }}> NoIndex Active</span>
+          </p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ fontSize: 13, color: "#9ca3af" }}>Pair</label>
+          <select
+            value={selectedPair}
+            onChange={(e) => changePair(e.target.value)}
+            style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #374151", background: "#1f2937", color: "#e5e7eb", cursor: "pointer" }}
+          >
+            {pairs.map((p) => (
+              <option key={p} value={p}>{p === "ALL" ? "ALL" : p}</option>
+            ))}
+          </select>
+        </div>
+      </div>
 
       {stats && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
@@ -133,13 +160,13 @@ export default function App() {
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <div style={{ fontWeight: 700 }}>Recent Signals (Entry / SL / TP)</div>
-          <button onClick={fetchData} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #374151", background: "#1f2937", color: "#e5e7eb", cursor: "pointer" }}>Refresh</button>
+          <button onClick={() => fetchData()} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #374151", background: "#1f2937", color: "#e5e7eb", cursor: "pointer" }}>Refresh</button>
         </div>
         <div style={{ overflowX: "auto" }}>
           <table>
             <thead>
               <tr>
-                <th>Waktu</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>Conf</th><th>Status</th><th>Result</th><th>Reasoning</th>
+                <th>Waktu</th><th>Pair</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>Conf</th><th>Status</th><th>Result</th><th>Reasoning</th>
               </tr>
             </thead>
             <tbody>
@@ -148,6 +175,7 @@ export default function App() {
                 return (
                   <tr key={s.id}>
                     <td>{new Date(s.created_at).toLocaleString("id-ID")}</td>
+                    <td>{s.pair}</td>
                     <td><span className="badge" style={{ background: s.direction === "LONG" ? "#065f46" : s.direction === "SHORT" ? "#7f1d1d" : "#374151", color: "#fff" }}>{s.direction}</span></td>
                     <td>{s.entry ?? "-"}</td>
                     <td>{s.sl ?? "-"}</td>
@@ -165,7 +193,7 @@ export default function App() {
       </div>
 
       <div style={{ marginTop: 16, fontSize: 11, color: "#6b7280" }}>
-        Cron: GitHub Actions 1H → POST /api/cron/analyze • Evaluate +5min • Learning loop injects last 10 losses + weekly lesson into Gemini prompt.
+        Cron: GitHub Actions 1H → POST /api/cron/analyze untuk 10 pair • Evaluate +5min • Learning loop injects last 10 losses + weekly lesson into Gemini prompt.
       </div>
     </div>
   );

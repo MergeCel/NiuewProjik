@@ -8,10 +8,14 @@ jobs:
   evaluate:
     runs-on: ubuntu-latest
     steps:
-      - name: Call evaluate endpoint
+      - name: Call evaluate endpoint for all pairs
         run: |
-          curl -s -X POST "${{ secrets.APP_URL }}/api/cron/evaluate?symbol=BTCUSDT" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            -H "Content-Type: application/json" \
-            -w "\nHTTP_STATUS:%{http_code}\n"
-          echo "Evaluate done"
+          for PAIR in BTCUSDT ETHUSDT SOLUSDT BNBUSDT XRPUSDT ADAUSDT DOGEUSDT AVAXUSDT LINKUSDT DOTUSDT; do
+            echo "Evaluating $PAIR"
+            curl -s -X POST "${{ secrets.APP_URL }}/api/cron/evaluate?symbol=$PAIR" \
+              -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+              -H "Content-Type: application/json" \
+              -w "\nHTTP_STATUS:%{http_code}\n"
+            sleep 1
+          done
+          echo "Evaluate all done"

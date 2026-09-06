@@ -8,10 +8,14 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - name: Call analyze endpoint
+      - name: Call analyze endpoint for all pairs
         run: |
-          curl -s -X POST "${{ secrets.APP_URL }}/api/cron/analyze?symbol=BTCUSDT&interval=1h" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            -H "Content-Type: application/json" \
-            -w "\nHTTP_STATUS:%{http_code}\n"
-          echo "Analyze done"
+          for PAIR in BTCUSDT ETHUSDT SOLUSDT BNBUSDT XRPUSDT ADAUSDT DOGEUSDT AVAXUSDT LINKUSDT DOTUSDT; do
+            echo "Analyzing $PAIR"
+            curl -s -X POST "${{ secrets.APP_URL }}/api/cron/analyze?symbol=$PAIR&interval=1h" \
+              -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+              -H "Content-Type: application/json" \
+              -w "\nHTTP_STATUS:%{http_code}\n"
+            sleep 2
+          done
+          echo "Analyze all done"
