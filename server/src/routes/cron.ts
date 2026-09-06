@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { fetchKlines, fetchCurrentPrice } from "../lib/binance.js";
-import { computeIndicators, shouldCallLLM } from "../lib/indicators.js";
+import { computeIndicators, computeSwingLevels, shouldCallLLM } from "../lib/indicators.js";
+import { checkDuplicate, getActivePositions } from "../lib/dedup.js";
 import { buildPrompt, callGemini, extractJson } from "../lib/gemini.js";
 import { supabase } from "../lib/supabase.js";
 import { cronAuth } from "../middleware/auth.js";
@@ -9,10 +10,10 @@ import { isSupportedPair, formatPair } from "../lib/pairs.js";
 
 const router = Router();
 
-// POST /api/cron/analyze - create new signal (1H)
+// POST /api/cron/analyze - create new signal (15m sniping)
 router.post("/analyze", cronAuth, async (req, res) => {
   const symbol = ((req.query.symbol as string) || "BTCUSDT").toUpperCase();
-  const interval = (req.query.interval as string) || "1h";
+  const interval = (req.query.interval as string) || "15m";
   try {
     if (!isSupportedPair(symbol)) {
       return res.status(400).json({ error: `Unsupported pair ${symbol}` });
@@ -24,6 +25,8 @@ router.post("/analyze", cronAuth, async (req, res) => {
 
     const ind = computeIndicators(closes, highs, lows);
     const filter = shouldCallLLM(ind);
+    const swing = computeSwingLevels(closes);
+    const activePositions = filter.call ? await getActivePositions(symbol) : [];
 
     // Fetch learning data
     const { data: recentLosses } = await supabase
@@ -78,12 +81,17 @@ router.post("/analyze", cronAuth, async (req, res) => {
 
     const prompt = buildPrompt({
       pair: formatPair(symbol),
+      timeframe: interval,
       price: ind.price,
       rsi: ind.rsi,
       ema50: ind.ema50,
       ema200: ind.ema200,
       atr: ind.atr,
       trend: ind.trend,
+      swingHigh: swing.swingHigh,
+      swingLow: swing.swingLow,
+      fib: swing.fib,
+      activePositions,
       recentLosses: losses,
       weeklyLesson: reflection?.lesson || null,
       klinesSummary: last5,
@@ -93,7 +101,19 @@ router.post("/analyze", cronAuth, async (req, res) => {
 
     // Validate RR if trade
     let status: string = "closed";
-    if (geminiResult.direction !== "NO_TRADE") status = "active";
+    let llmModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    let reasoning = geminiResult.reasoning;
+
+    if (geminiResult.direction !== "NO_TRADE") {
+      status = "active";
+      // Anti-spam: suppress duplicate entry close in price/time to an existing signal
+      const dup = await checkDuplicate(symbol, geminiResult.direction, geminiResult.entry, ind.atr);
+      if (dup.duplicate) {
+        status = "suppressed";
+        llmModel = "dedup-filter";
+        reasoning = `Duplicate suppressed: same-direction entry ${dup.existing?.entry} dalam 0.5xATR (${ind.atr?.toFixed(2)}) pada 6 jam terakhir (signal ${dup.existing?.id}). ${geminiResult.reasoning}`;
+      }
+    }
 
     const { data, error } = await supabase
       .from("signals")
@@ -105,8 +125,8 @@ router.post("/analyze", cronAuth, async (req, res) => {
         sl: geminiResult.sl,
         tp: geminiResult.tp,
         confidence: geminiResult.confidence,
-        reasoning: geminiResult.reasoning,
-        llm_model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        reasoning,
+        llm_model: llmModel,
         status,
         raw_prompt: prompt,
         raw_response: geminiResult,
@@ -116,7 +136,7 @@ router.post("/analyze", cronAuth, async (req, res) => {
 
     if (error) throw error;
 
-    res.json({ signal: data, indicators: ind, gemini: geminiResult });
+    res.json({ signal: data, indicators: ind, gemini: geminiResult, suppressed: status === "suppressed" });
   } catch (e: any) {
     console.error("analyze error", e);
     res.status(500).json({ error: e.message });

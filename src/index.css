@@ -10,3 +10,4 @@ tr:nth-child(even) { background: #0f172a; }
 .badge-win { background: #065f46; color: #6ee7b7; }
 .badge-loss { background: #7f1d1d; color: #fca5a5; }
 .badge-active { background: #1e40af; color: #93c5fd; }
+.badge-suppressed { background: #78350f; color: #fbbf24; }

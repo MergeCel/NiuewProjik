@@ -31,6 +31,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   const losses = signals.filter((s: any) => s.outcomes?.[0]?.result === "LOSS").length;
   const be = signals.filter((s: any) => s.outcomes?.[0]?.result === "BE").length;
   const active = signals.filter((s: any) => s.status === "active").length;
+  const suppressed = signals.filter((s: any) => s.status === "suppressed").length;
   const winrate = total ? (wins / (wins + losses || 1)) * 100 : 0;
 
   const pnl = signals.reduce((sum: number, s: any) => sum + (s.outcomes?.[0]?.pnl_pips || 0), 0);
@@ -48,6 +49,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     losses,
     be,
     active,
+    suppressed,
     winrate: Number(winrate.toFixed(2)),
     pnl: Number(pnl.toFixed(2)),
     reflection,

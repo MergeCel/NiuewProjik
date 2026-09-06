@@ -82,12 +82,17 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
 
 export function buildPrompt(params: {
   pair: string;
+  timeframe: string;
   price: number;
   rsi: number | null;
   ema50: number | null;
   ema200: number | null;
   atr: number | null;
   trend: string;
+  swingHigh: number;
+  swingLow: number;
+  fib: { lvl382: number; lvl50: number; lvl618: number };
+  activePositions: any[];
   recentLosses: any[];
   weeklyLesson: string | null;
   klinesSummary: string;
@@ -104,16 +109,32 @@ export function buildPrompt(params: {
 
   const lesson = params.weeklyLesson || "Belum ada lesson mingguan.";
 
-  return `You are a ${params.pair} 1H swing trader. Task: provide entry, stop loss, take profit ONLY if confidence >=70. RR minimal 1:1.5.
+  const activeText =
+    params.activePositions.length === 0
+      ? "Tidak ada posisi aktif."
+      : params.activePositions
+          .map(
+            (p) =>
+              `- ${p.direction} entry ${p.entry} SL ${p.sl} TP ${p.tp} (conf ${p.confidence}, umur ${Math.round((Date.now() - new Date(p.created_at).getTime()) / 3600000)} jam)`
+          )
+          .join("\n");
 
-MARKET DATA (Binance 1H, ${params.pair}):
+  return `You are a ${params.pair} ${params.timeframe} SNIPER trader using Smart Money Concepts (SMC) + Fibonacci. Goal: entry presisi di level kunci, SL ketat di belakang struktur, TP di tempat yang TEPAT (order block berikutnya / fib extension 1:2, 1:4, 2:5, atau swing) — bukan RR acak. Selektif: hanya trade jika ada konfluensi.
+
+MARKET DATA (Binance ${params.timeframe}, ${params.pair}):
 Price: ${params.price}
 RSI(14): ${params.rsi?.toFixed(2) ?? "n/a"}
 EMA50: ${params.ema50?.toFixed(2) ?? "n/a"}
 EMA200: ${params.ema200?.toFixed(2) ?? "n/a"}
 ATR(14): ${params.atr?.toFixed(2) ?? "n/a"}
 Trend (EMA50 vs EMA200): ${params.trend}
+Swing High: ${params.swingHigh.toFixed(2)}
+Swing Low: ${params.swingLow.toFixed(2)}
+Fibonacci (retracement): 0.382: ${params.fib.lvl382.toFixed(2)} | 0.5: ${params.fib.lvl50.toFixed(2)} | 0.618: ${params.fib.lvl618.toFixed(2)}
 Recent klines: ${params.klinesSummary}
+
+POSISI AKTIF (pair ini):
+${activeText}
 
 LEARNING FROM MISTAKES - 10 LOSS TERAKHIR:
 ${lossesText}
@@ -121,11 +142,14 @@ ${lossesText}
 WEEKLY LESSON:
 ${lesson}
 
-RULES:
+RULES (SNIPING):
+- Tunggu konfluensi setup: liquidity sweep / ChoCH (change of character) / retest order block + alignment Fibonacci & trend.
+- Jika sudah ada posisi aktif SEARAH dengan entry yang berjarak dekat, pilih NO_TRADE (jangan re-entry redundan).
 - Jika confidence <70, output NO_TRADE.
-- Jangan ulangi pattern loss di atas (misal counter-trend, SL terlalu ketat <0.8*ATR, TP tidak realistis).
-- SL minimal 0.8*ATR, TP minimal 1.2*ATR, RR >=1.5
-- Entry harus dekat price sekarang (max 0.3% deviasi).
+- Jangan ulangi pattern loss di atas.
+- Entry presisi, dekat price sekarang (max 0.2% deviasi), di zona kunci.
+- SL di belakang struktur (sweep low/high atau order block), minimal 0.6*ATR.
+- TP di level TEPAT: order block berikutnya, fib extension (1:2 / 1:4 / 2:5), atau swing — tidak harus RR tetap, boleh besar asal level valid.
 - Output JSON ONLY, no markdown.
 
 Format JSON:
@@ -135,7 +159,7 @@ Format JSON:
   "sl": number | null,
   "tp": number | null,
   "confidence": number (0-100),
-  "reasoning": "string max 300 chars, jelaskan kenapa & lesson applied",
+  "reasoning": "string max 300 chars, jelaskan setup & level yang dipakai (order block/fib/ChoCH) & lesson applied",
   "rr": number | null
 }
 `;

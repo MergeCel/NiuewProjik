@@ -1,7 +1,7 @@
-name: cron-evaluate-1h
+name: cron-evaluate-15m
 on:
   schedule:
-    - cron: "5 * * * *" # 5 minutes after analyze
+    - cron: "2-59/15 * * * *" # every 15 min, offset +2min after analyze
   workflow_dispatch:
 
 jobs:
@@ -16,6 +16,6 @@ jobs:
               -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
               -H "Content-Type: application/json" \
               -w "\nHTTP_STATUS:%{http_code}\n"
-            sleep 1
+            sleep 2
           done
           echo "Evaluate all done"

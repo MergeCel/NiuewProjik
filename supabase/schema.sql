@@ -17,7 +17,7 @@ create table if not exists signals (
   confidence int check (confidence >=0 and confidence <=100),
   reasoning text,
   llm_model text,
-  status text not null default 'closed' check (status in ('active','closed','pending')),
+  status text not null default 'closed' check (status in ('active','closed','pending','suppressed')),
   raw_prompt text,
   raw_response jsonb
 );
@@ -63,3 +63,7 @@ create policy "allow all reflections" on ai_reflections for all using (true) wit
 -- create extension if not exists pg_cron;
 -- create extension if not exists pg_net;
 -- select cron.schedule('analyze-1h', '0 * * * *', $$ select net.http_post(url:='https://your-app.vercel.app/api/cron/analyze', headers:='{"x-cron-secret":"YOUR_CRON_SECRET","Content-Type":"application/json"}'::jsonb) $$);
+
+-- MIGRATION (run if signals table already exists): allow 'suppressed' status for duplicate-filtered signals
+alter table signals drop constraint if exists signals_status_check;
+alter table signals add constraint signals_status_check check (status in ('active','closed','pending','suppressed'));

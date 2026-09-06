@@ -22,6 +22,7 @@ type Stats = {
   losses: number;
   be: number;
   active: number;
+  suppressed: number;
   winrate: number;
   pnl: number;
   reflection?: { lesson: string; summary: string; winrate_week: number };
@@ -97,7 +98,7 @@ export default function App() {
         <div>
           <h1 style={{ fontSize: 22, marginBottom: 4 }}>AI Trading Bot — Private Dashboard</h1>
           <p style={{ color: "#9ca3af", fontSize: 13, marginBottom: 16 }}>
-            Multi-Pair 1H • Gemini 2.5-flash • Cron 1H •
+            Multi-Pair 15M • Gemini 2.5-flash • Cron 15M •
             <span style={{ color: "#fbbf24" }}> NoIndex Active</span>
           </p>
         </div>
@@ -121,6 +122,7 @@ export default function App() {
           <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>Winrate</div><div style={{ fontSize: 22, fontWeight: 700, color: stats.winrate >= 50 ? "#6ee7b7" : "#fca5a5" }}>{stats.winrate}%</div><div style={{ fontSize: 11 }}>{stats.wins}W / {stats.losses}L / {stats.be}BE</div></div>
           <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>P/L Cumulative</div><div style={{ fontSize: 22, fontWeight: 700, color: stats.pnl >= 0 ? "#6ee7b7" : "#fca5a5" }}>{stats.pnl.toFixed(2)}</div></div>
           <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>Active</div><div style={{ fontSize: 22, fontWeight: 700 }}>{stats.active}</div></div>
+          <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>Suppressed (anti-spam)</div><div style={{ fontSize: 22, fontWeight: 700, color: "#fbbf24" }}>{stats.suppressed}</div></div>
         </div>
       )}
 
@@ -181,7 +183,7 @@ export default function App() {
                     <td>{s.sl ?? "-"}</td>
                     <td>{s.tp ?? "-"}</td>
                     <td>{s.confidence}%</td>
-                    <td><span className={`badge ${s.status === "active" ? "badge-active" : ""}`}>{s.status}</span></td>
+                    <td><span className={`badge ${s.status === "active" ? "badge-active" : s.status === "suppressed" ? "badge-suppressed" : ""}`}>{s.status}</span></td>
                     <td>{out ? <span className={`badge ${out.result === "WIN" ? "badge-win" : out.result === "LOSS" ? "badge-loss" : ""}`}>{out.result} {out.hit ? `(${out.hit})` : ""}</span> : "-"}</td>
                     <td style={{ maxWidth: 260, whiteSpace: "wrap", fontSize: 12 }}>{s.reasoning}</td>
                   </tr>
@@ -193,7 +195,7 @@ export default function App() {
       </div>
 
       <div style={{ marginTop: 16, fontSize: 11, color: "#6b7280" }}>
-        Cron: GitHub Actions 1H → POST /api/cron/analyze untuk 10 pair • Evaluate +5min • Learning loop injects last 10 losses + weekly lesson into Gemini prompt.
+        Cron: GitHub Actions 15M → POST /api/cron/analyze (15m sniping, 10 pair) • Evaluate +2min • Anti-spam: entry duplikat searah dalam 6 jam + 0.5xATR ditekan (status suppressed, jadi data belajar AI) • Learning loop injects last 10 losses + weekly lesson into Gemini prompt.
       </div>
     </div>
   );

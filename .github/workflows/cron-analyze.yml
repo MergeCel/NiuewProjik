@@ -1,7 +1,7 @@
-name: cron-analyze-1h
+name: cron-analyze-15m
 on:
   schedule:
-    - cron: "0 * * * *" # every 1 hour
+    - cron: "*/15 * * * *" # every 15 minutes
   workflow_dispatch:
 
 jobs:
@@ -12,10 +12,10 @@ jobs:
         run: |
           for PAIR in BTCUSDT ETHUSDT SOLUSDT BNBUSDT XRPUSDT ADAUSDT DOGEUSDT AVAXUSDT LINKUSDT DOTUSDT; do
             echo "Analyzing $PAIR"
-            curl -s -X POST "${{ secrets.APP_URL }}/api/cron/analyze?symbol=$PAIR&interval=1h" \
+            curl -s -X POST "${{ secrets.APP_URL }}/api/cron/analyze?symbol=$PAIR&interval=15m" \
               -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
               -H "Content-Type: application/json" \
               -w "\nHTTP_STATUS:%{http_code}\n"
-            sleep 2
+            sleep 4
           done
           echo "Analyze all done"
