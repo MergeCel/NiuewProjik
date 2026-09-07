@@ -238,11 +238,13 @@ router.post("/reflect", cronAuth, async (req, res) => {
       return res.json({ message: "No signals this week" });
     }
 
-    const wins = weekSignals.filter((s: any) => s.outcomes?.[0]?.result === "WIN").length;
-    const losses = weekSignals.filter((s: any) => s.outcomes?.[0]?.result === "LOSS").length;
-    const winrate = weekSignals.length ? (wins / weekSignals.length) * 100 : 0;
+    const tradeSignals = weekSignals.filter((s: any) => s.direction === "LONG" || s.direction === "SHORT");
+    const wins = tradeSignals.filter((s: any) => s.outcomes?.[0]?.result === "WIN").length;
+    const losses = tradeSignals.filter((s: any) => s.outcomes?.[0]?.result === "LOSS").length;
+    const suppressedCount = weekSignals.filter((s: any) => s.status === "suppressed").length;
+    const winrate = tradeSignals.length ? (wins / tradeSignals.length) * 100 : 0;
 
-    const summary = `Week ${since.slice(0, 10)}: ${weekSignals.length} signals, ${wins}W/${losses}L, winrate ${winrate.toFixed(1)}%`;
+    const summary = `Week ${since.slice(0, 10)}: ${tradeSignals.length} trades, ${wins}W/${losses}L, winrate ${winrate.toFixed(1)}% (${suppressedCount} suppressed by anti-spam)`;
     const lessonPrompt = `You are trading coach. Analyze this week trades:\n${JSON.stringify(
       weekSignals.slice(0, 20).map((s: any) => ({
         dir: s.direction,

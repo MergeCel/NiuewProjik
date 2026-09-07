@@ -45,14 +45,18 @@ export default function App() {
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${text.slice(0, 200)}`);
         try { return JSON.parse(text); } catch { throw new Error(`API returned HTML (check Vercel deploy / Basic Auth): ${text.slice(0, 120)}`); }
       };
-      const pairQ = pair && pair !== "ALL" ? `?pair=${pair}` : "";
-      const statusQ =
-        !status || status === "ALL"
-          ? ""
-          : `${pairQ ? "&" : "?"}${status === "notrade" ? "direction=NO_TRADE" : `status=${status}`}`;
+      const sigParams = new URLSearchParams();
+      sigParams.set("limit", "100");
+      if (pair && pair !== "ALL") sigParams.set("pair", pair);
+      if (status && status !== "ALL") {
+        if (status === "notrade") sigParams.set("direction", "NO_TRADE");
+        else sigParams.set("status", status);
+      }
+      const statsParams = new URLSearchParams();
+      if (pair && pair !== "ALL") statsParams.set("pair", pair);
       const [sRes, sigRes] = await Promise.all([
-        fetchJson(`/api/signals/stats${pairQ}`),
-        fetchJson(`/api/signals?limit=100${pairQ}${statusQ}`),
+        fetchJson(`/api/signals/stats${statsParams.size ? `?${statsParams.toString()}` : ""}`),
+        fetchJson(`/api/signals?${sigParams.toString()}`),
       ]);
       if ((sRes as any).error) throw new Error((sRes as any).error);
       setStats(sRes as any);
