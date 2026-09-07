@@ -35,8 +35,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [pairs, setPairs] = useState<string[]>(["ALL"]);
   const [selectedPair, setSelectedPair] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
 
-  const fetchData = async (pair: string = selectedPair) => {
+  const fetchData = async (pair: string = selectedPair, status: string = statusFilter) => {
     try {
       const fetchJson = async (url: string) => {
         const r = await fetch(url);
@@ -45,9 +46,13 @@ export default function App() {
         try { return JSON.parse(text); } catch { throw new Error(`API returned HTML (check Vercel deploy / Basic Auth): ${text.slice(0, 120)}`); }
       };
       const pairQ = pair && pair !== "ALL" ? `?pair=${pair}` : "";
+      const statusQ =
+        !status || status === "ALL"
+          ? ""
+          : `${pairQ ? "&" : "?"}${status === "notrade" ? "direction=NO_TRADE" : `status=${status}`}`;
       const [sRes, sigRes] = await Promise.all([
         fetchJson(`/api/signals/stats${pairQ}`),
-        fetchJson(`/api/signals?limit=100${pairQ}`),
+        fetchJson(`/api/signals?limit=100${pairQ}${statusQ}`),
       ]);
       if ((sRes as any).error) throw new Error((sRes as any).error);
       setStats(sRes as any);
@@ -63,11 +68,17 @@ export default function App() {
   const changePair = (pair: string) => {
     setSelectedPair(pair);
     setLoading(true);
-    fetchData(pair);
+    fetchData(pair, statusFilter);
+  };
+
+  const changeStatus = (status: string) => {
+    setStatusFilter(status);
+    setLoading(true);
+    fetchData(selectedPair, status);
   };
 
   useEffect(() => {
-    fetchData("ALL");
+    fetchData("ALL", "ALL");
     const id = setInterval(() => fetchData(), 60000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,6 +123,18 @@ export default function App() {
             {pairs.map((p) => (
               <option key={p} value={p}>{p === "ALL" ? "ALL" : p}</option>
             ))}
+          </select>
+          <label style={{ fontSize: 13, color: "#9ca3af" }}>Status</label>
+          <select
+            value={statusFilter}
+            onChange={(e) => changeStatus(e.target.value)}
+            style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #374151", background: "#1f2937", color: "#e5e7eb", cursor: "pointer" }}
+          >
+            <option value="ALL">ALL</option>
+            <option value="active">Active</option>
+            <option value="closed">Closed</option>
+            <option value="suppressed">Suppressed</option>
+            <option value="notrade">NO_TRADE</option>
           </select>
         </div>
       </div>

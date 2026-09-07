@@ -4,15 +4,19 @@ import { SUPPORTED_PAIRS } from "../lib/pairs.js";
 
 const router = Router();
 
-// GET /api/signals - list recent (optional ?pair= filter)
+// GET /api/signals - list recent (optional ?pair=, ?status=, ?direction= filters)
 router.get("/", async (req: Request, res: Response) => {
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
   const pair = (req.query.pair as string) || "";
+  const status = (req.query.status as string) || "";
+  const direction = (req.query.direction as string) || "";
   let query = supabase
     .from("signals")
     .select("*, outcomes(*)")
     .order("created_at", { ascending: false });
   if (pair && pair !== "ALL") query = query.eq("pair", pair.toUpperCase());
+  if (status && status !== "ALL") query = query.eq("status", status.toLowerCase());
+  if (direction && direction !== "ALL") query = query.eq("direction", direction.toUpperCase());
   const { data, error } = await query.limit(limit);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
