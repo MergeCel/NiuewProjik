@@ -10,7 +10,7 @@ export interface GeminiSignal {
   rr: number | null;
 }
 
-const MODEL_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview"];
+const MODEL_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
 export function extractJson(text: string): string {
   const t = text.trim();
@@ -26,58 +26,79 @@ export function extractJson(text: string): string {
   return t;
 }
 
-export async function callGemini(prompt: string, modelOverride?: string): Promise<GeminiSignal> {
+export async function callGemini(prompt: string, modelOverride?: string): Promise<{ signal: GeminiSignal; model: string }> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
   const preferred = modelOverride || process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const modelsToTry = [preferred, ...MODEL_FALLBACKS.filter((m) => m !== preferred)];
 
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const noTrade = (reasoning: string): GeminiSignal => ({
+    direction: "NO_TRADE",
+    entry: null,
+    sl: null,
+    tp: null,
+    confidence: 0,
+    reasoning,
+    rr: null,
+  });
+
   let lastError: any;
+  const MAX_ATTEMPTS = 2; // initial + 1 retry on rate limit
+
   for (const modelName of modelsToTry) {
-    try {
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.3,
-          maxOutputTokens: 2048,
-        },
-      });
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          generationConfig: {
+            responseMimeType: "application/json",
+            temperature: 0.3,
+            maxOutputTokens: 2048,
+          },
+        });
 
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
-      // Clean possible markdown fences and extract JSON robustly
-      const cleaned = extractJson(text);
-      const parsed = JSON.parse(cleaned) as GeminiSignal;
+        const result = await model.generateContent(prompt);
+        const text = result.response.text();
+        // Clean possible markdown fences and extract JSON robustly
+        const cleaned = extractJson(text);
+        const parsed = JSON.parse(cleaned) as GeminiSignal;
 
-      // Validate
-      if (!["LONG", "SHORT", "NO_TRADE"].includes(parsed.direction)) {
-        throw new Error(`Invalid direction ${parsed.direction}`);
-      }
-      if (parsed.direction !== "NO_TRADE") {
-        if (parsed.entry == null || parsed.sl == null || parsed.tp == null) {
-          throw new Error("Missing entry/sl/tp for trade");
+        // Validate
+        if (!["LONG", "SHORT", "NO_TRADE"].includes(parsed.direction)) {
+          throw new Error(`Invalid direction ${parsed.direction}`);
         }
-      }
-      return parsed;
-    } catch (e) {
-      lastError = e;
-      console.warn(`Gemini model ${modelName} failed:`, (e as Error).message);
-      // treat truncated/invalid output as NO_TRADE so analyze still succeeds
-      const msg = String((e as Error).message);
-      if (msg.includes("Unterminated string") || msg.includes("Expected")) {
-        return { direction: "NO_TRADE", entry: null, sl: null, tp: null, confidence: 0, reasoning: `Gemini ${modelName} returned invalid JSON; treated as no-trade`, rr: null };
-      }
-      // try next fallback
-      if (msg.includes("429")) {
-        // rate limit, wait briefly
-        await new Promise((r) => setTimeout(r, 2000));
+        if (parsed.direction !== "NO_TRADE") {
+          if (parsed.entry == null || parsed.sl == null || parsed.tp == null) {
+            throw new Error("Missing entry/sl/tp for trade");
+          }
+        }
+        return { signal: parsed, model: modelName };
+      } catch (e) {
+        lastError = e;
+        const msg = String((e as Error).message);
+        console.warn(`Gemini model ${modelName} attempt ${attempt} failed:`, msg);
+        // Truncated/invalid JSON: treat as NO_TRADE so analyze still succeeds
+        if (msg.includes("Unterminated string") || msg.includes("Expected")) {
+          return { signal: noTrade(`Gemini ${modelName} returned invalid JSON; treated as no-trade`), model: modelName };
+        }
+        const isRateLimit = msg.includes("429") || msg.includes("RATE_LIMIT") || msg.includes("RESOURCE_EXHAUSTED");
+        if (isRateLimit) {
+          if (attempt < MAX_ATTEMPTS) {
+            await sleep(8000); // backoff then retry same model
+            continue;
+          }
+          // attempts exhausted -> try next model
+        } else {
+          break; // non-rate-limit error -> try next model
+        }
       }
     }
   }
-  throw new Error(`All Gemini models failed. Last: ${lastError?.message}`);
+  // All models exhausted -> clean NO_TRADE instead of throwing (avoid 500 spam)
+  return { signal: noTrade(`Gemini models unavailable: ${lastError?.message}`), model: modelsToTry[0] };
 }
 
 export function buildPrompt(params: {

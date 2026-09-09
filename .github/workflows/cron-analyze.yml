@@ -16,6 +16,6 @@ jobs:
               -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
               -H "Content-Type: application/json" \
               -w "\nHTTP_STATUS:%{http_code}\n"
-            sleep 4
+            sleep 8
           done
           echo "Analyze all done"

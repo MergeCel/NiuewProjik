@@ -98,20 +98,21 @@ router.post("/analyze", cronAuth, async (req, res) => {
     });
 
     const geminiResult = await callGemini(prompt);
+    const gem = geminiResult.signal;
 
     // Validate RR if trade
     let status: string = "closed";
-    let llmModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-    let reasoning = geminiResult.reasoning;
+    let llmModel = geminiResult.model;
+    let reasoning = gem.reasoning;
 
-    if (geminiResult.direction !== "NO_TRADE") {
+    if (gem.direction !== "NO_TRADE") {
       status = "active";
       // Anti-spam: suppress duplicate entry close in price/time to an existing signal
-      const dup = await checkDuplicate(symbol, geminiResult.direction, geminiResult.entry, ind.atr);
+      const dup = await checkDuplicate(symbol, gem.direction, gem.entry, ind.atr);
       if (dup.duplicate) {
         status = "suppressed";
         llmModel = "dedup-filter";
-        reasoning = `Duplicate suppressed: same-direction entry ${dup.existing?.entry} dalam 0.5xATR (${ind.atr?.toFixed(2)}) pada 6 jam terakhir (signal ${dup.existing?.id}). ${geminiResult.reasoning}`;
+        reasoning = `Duplicate suppressed: same-direction entry ${dup.existing?.entry} dalam 0.5xATR (${ind.atr?.toFixed(2)}) pada 6 jam terakhir (signal ${dup.existing?.id}). ${gem.reasoning}`;
       }
     }
 
@@ -120,23 +121,23 @@ router.post("/analyze", cronAuth, async (req, res) => {
       .insert({
         pair: symbol,
         timeframe: interval,
-        direction: geminiResult.direction,
-        entry: geminiResult.entry,
-        sl: geminiResult.sl,
-        tp: geminiResult.tp,
-        confidence: geminiResult.confidence,
+        direction: gem.direction,
+        entry: gem.entry,
+        sl: gem.sl,
+        tp: gem.tp,
+        confidence: gem.confidence,
         reasoning,
         llm_model: llmModel,
         status,
         raw_prompt: prompt,
-        raw_response: geminiResult,
+        raw_response: gem,
       })
       .select()
       .single();
 
     if (error) throw error;
 
-    res.json({ signal: data, indicators: ind, gemini: geminiResult, suppressed: status === "suppressed" });
+    res.json({ signal: data, indicators: ind, gemini: gem, suppressed: status === "suppressed" });
   } catch (e: any) {
     console.error("analyze error", e);
     res.status(500).json({ error: e.message });
