@@ -33,11 +33,9 @@ export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [pairs, setPairs] = useState<string[]>(["ALL"]);
-  const [selectedPair, setSelectedPair] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
 
-  const fetchData = async (pair: string = selectedPair, status: string = statusFilter) => {
+  const fetchData = async () => {
     try {
       const fetchJson = async (url: string) => {
         const r = await fetch(url);
@@ -45,22 +43,12 @@ export default function App() {
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${text.slice(0, 200)}`);
         try { return JSON.parse(text); } catch { throw new Error(`API returned HTML (check Vercel deploy / Basic Auth): ${text.slice(0, 120)}`); }
       };
-      const sigParams = new URLSearchParams();
-      sigParams.set("limit", "100");
-      if (pair && pair !== "ALL") sigParams.set("pair", pair);
-      if (status && status !== "ALL") {
-        if (status === "notrade") sigParams.set("direction", "NO_TRADE");
-        else sigParams.set("status", status);
-      }
-      const statsParams = new URLSearchParams();
-      if (pair && pair !== "ALL") statsParams.set("pair", pair);
       const [sRes, sigRes] = await Promise.all([
-        fetchJson(`/api/signals/stats${statsParams.size ? `?${statsParams.toString()}` : ""}`),
-        fetchJson(`/api/signals?${sigParams.toString()}`),
+        fetchJson("/api/signals/stats"),
+        fetchJson("/api/signals?limit=100"),
       ]);
       if ((sRes as any).error) throw new Error((sRes as any).error);
       setStats(sRes as any);
-      if ((sRes as any).pairs && (sRes as any).pairs.length) setPairs(["ALL", ...(sRes as any).pairs]);
       setSignals(Array.isArray(sigRes) ? sigRes as any : (sigRes as any).error ? [] : sigRes as any);
     } catch (e: any) {
       setError(e.message);
@@ -69,20 +57,12 @@ export default function App() {
     }
   };
 
-  const changePair = (pair: string) => {
-    setSelectedPair(pair);
-    setLoading(true);
-    fetchData(pair, statusFilter);
-  };
-
   const changeStatus = (status: string) => {
     setStatusFilter(status);
-    setLoading(true);
-    fetchData(selectedPair, status);
   };
 
   useEffect(() => {
-    fetchData("ALL", "ALL");
+    fetchData();
     const id = setInterval(() => fetchData(), 60000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -90,6 +70,17 @@ export default function App() {
 
   if (loading) return <div style={{ padding: 24 }}>Loading...</div>;
   if (error) return <div style={{ padding: 24, color: "#fca5a5" }}>Error: {error} <br/><small>Check Basic Auth / Supabase env</small></div>;
+
+  // Filter ONLY the recent signals table (charts stay on full data)
+  const filteredSignals = signals.filter((s) => {
+    const out = s.outcomes?.[0];
+    if (statusFilter === "ALL") return true;
+    if (statusFilter === "profit") return out?.result === "WIN";
+    if (statusFilter === "loss") return out?.result === "LOSS";
+    if (statusFilter === "active") return s.status === "active" && s.direction !== "NO_TRADE";
+    if (statusFilter === "closed") return s.status === "closed" && s.direction !== "NO_TRADE";
+    return true;
+  });
 
   const chartData = signals
     .slice(0, 20)
@@ -107,6 +98,14 @@ export default function App() {
     return { ...d, cum };
   });
 
+  // Evaluation & learning data
+  const evaluated = signals.filter((s) => s.outcomes?.[0]);
+  const evalWins = evaluated.filter((s) => s.outcomes?.[0]?.result === "WIN").length;
+  const evalLosses = evaluated.filter((s) => s.outcomes?.[0]?.result === "LOSS").length;
+  const evalBe = evaluated.filter((s) => s.outcomes?.[0]?.result === "BE").length;
+  const evalWinrate = evaluated.length ? (evalWins / evaluated.length) * 100 : 0;
+  const lastLosses = signals.filter((s) => s.outcomes?.[0]?.result === "LOSS").slice(0, 10);
+
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 20 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
@@ -118,16 +117,6 @@ export default function App() {
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <label style={{ fontSize: 13, color: "#9ca3af" }}>Pair</label>
-          <select
-            value={selectedPair}
-            onChange={(e) => changePair(e.target.value)}
-            style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #374151", background: "#1f2937", color: "#e5e7eb", cursor: "pointer" }}
-          >
-            {pairs.map((p) => (
-              <option key={p} value={p}>{p === "ALL" ? "ALL" : p}</option>
-            ))}
-          </select>
           <label style={{ fontSize: 13, color: "#9ca3af" }}>Status</label>
           <select
             value={statusFilter}
@@ -135,10 +124,10 @@ export default function App() {
             style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #374151", background: "#1f2937", color: "#e5e7eb", cursor: "pointer" }}
           >
             <option value="ALL">ALL</option>
+            <option value="profit">Profit</option>
+            <option value="loss">Loss</option>
             <option value="active">Active</option>
             <option value="closed">Closed</option>
-            <option value="suppressed">Suppressed</option>
-            <option value="notrade">NO_TRADE</option>
           </select>
         </div>
       </div>
@@ -186,6 +175,59 @@ export default function App() {
         </div>
       </div>
 
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>Hasil Evaluasi & Learning</div>
+        <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 8 }}>
+          Evaluated: {evaluated.length} • W {evalWins} / L {evalLosses} / BE {evalBe} • Winrate {evalWinrate.toFixed(1)}%
+        </div>
+        {evaluated.length > 0 ? (
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Waktu</th><th>Pair</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Hit</th><th>Result</th><th>PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {evaluated.slice(0, 10).map((s) => {
+                  const out = s.outcomes?.[0];
+                  return (
+                    <tr key={s.id}>
+                      <td>{new Date(s.created_at).toLocaleString("id-ID")}</td>
+                      <td>{s.pair}</td>
+                      <td>{s.direction}</td>
+                      <td>{s.entry ?? "-"}</td>
+                      <td>{out?.exit_price ?? "-"}</td>
+                      <td>{out?.hit ?? "-"}</td>
+                      <td><span className={`badge ${out?.result === "WIN" ? "badge-win" : out?.result === "LOSS" ? "badge-loss" : ""}`}>{out?.result ?? "-"}</span></td>
+                      <td>{out?.pnl_pips?.toFixed(2) ?? "-"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: "#6b7280" }}>Belum ada hasil evaluasi.</div>
+        )}
+
+        <div style={{ fontWeight: 700, marginTop: 12, marginBottom: 6, fontSize: 13 }}>
+          10 Loss Terakhir yang Dipelajari AI (diinjeksi ke prompt Gemini)
+        </div>
+        {lastLosses.length > 0 ? (
+          lastLosses.map((l) => {
+            const out = l.outcomes?.[0];
+            return (
+              <div key={l.id} style={{ fontSize: 12, color: "#d1d5db", marginBottom: 4 }}>
+                <span style={{ color: "#fca5a5", fontWeight: 700 }}>{l.pair} {l.direction}</span> entry {l.entry} → {out?.hit ?? "-"} ({out?.result ?? "-"}) — {l.reasoning?.slice(0, 120)}
+              </div>
+            );
+          })
+        ) : (
+          <div style={{ fontSize: 13, color: "#6b7280" }}>Belum ada loss.</div>
+        )}
+      </div>
+
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <div style={{ fontWeight: 700 }}>Recent Signals (Entry / SL / TP)</div>
@@ -199,7 +241,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {signals.map((s) => {
+              {filteredSignals.map((s) => {
                 const out = s.outcomes?.[0];
                 return (
                   <tr key={s.id}>

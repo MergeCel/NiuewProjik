@@ -48,8 +48,8 @@ router.post("/analyze", cronAuth, async (req, res) => {
       entry: r.entry,
       sl: r.sl,
       tp: r.tp,
-      result: r.outcomes?.result,
-      hit: r.outcomes?.hit,
+      result: r.outcomes?.[0]?.result,
+      hit: r.outcomes?.[0]?.hit,
       reasoning: r.reasoning,
     }));
 
