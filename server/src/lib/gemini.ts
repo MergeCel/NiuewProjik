@@ -10,7 +10,7 @@ export interface GeminiSignal {
   rr: number | null;
 }
 
-const MODEL_FALLBACKS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const MODEL_FALLBACKS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3-flash-preview"];
 
 export function extractJson(text: string): string {
   const t = text.trim();
@@ -30,7 +30,7 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
-  const preferred = modelOverride || process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const preferred = modelOverride || process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
   const modelsToTry = [preferred, ...MODEL_FALLBACKS.filter((m) => m !== preferred)];
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

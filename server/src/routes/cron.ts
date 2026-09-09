@@ -261,7 +261,7 @@ router.post("/reflect", cronAuth, async (req, res) => {
     let lesson = "No lesson generated";
     try {
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-      const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-2.5-flash" });
+      const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-3.5-flash-lite" });
       const result = await model.generateContent(lessonPrompt);
       const text = result.response.text();
       const parsed = JSON.parse(extractJson(text));
