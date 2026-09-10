@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { fetchKlines, fetchCurrentPrice } from "../lib/binance.js";
-import { computeIndicators, computeSwingLevels, shouldCallLLM } from "../lib/indicators.js";
+import { computeIndicators, computeSwingLevels, shouldCallLLM, computeAtr } from "../lib/indicators.js";
 import { checkDuplicate, getActivePositions } from "../lib/dedup.js";
 import { buildPrompt, callGemini, extractJson } from "../lib/gemini.js";
 import { supabase } from "../lib/supabase.js";
@@ -9,6 +9,25 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { isSupportedPair, formatPair } from "../lib/pairs.js";
 
 const router = Router();
+
+// NO_TRADE tidak memengaruhi pembelajaran (learning hanya dari outcomes LOSS),
+// jadi batasi penyimpanan agar DB tidak penuh dengan baris NO_TRADE.
+const KEEP_NO_TRADE = 500;
+
+// Cooldown per-pair: jika analisis terakhir (bukan baris cooldown) pair ini adalah
+// NO_TRADE atau suppressed dalam jendela ini, lewati panggilan Gemini.
+// Gemini free-tier punya batas RPD per model; tanpa throttle, 10 pair x 96 siklus/hari
+// membakar kuota dan memicu burst 429 ("Gemini models unavailable").
+const NO_TRADE_COOLDOWN_MIN = Number(process.env.NO_TRADE_COOLDOWN_MIN) || 60;
+
+// Override breakout dalam jendela cooldown: panggil Gemini tetap jika harga bergerak
+// melebihi COOLDOWN_OVERRIDE_ATR x ATR(timeframe lebih tinggi, 1H = baseline stabil).
+// Hysteresis: setelah override, threshold naik ke COOLDOWN_OVERRIDE_ATR_HYST sebelum
+// boleh trigger lagi (mencegah re-trigger untuk pergerakan yang sama / whipsaw).
+// Cap: maksimal OVERRIDE_CAP_PER_HOUR override per jam per pair (anti-choppy).
+const COOLDOWN_OVERRIDE_ATR = Number(process.env.COOLDOWN_OVERRIDE_ATR) || 0.5;
+const COOLDOWN_OVERRIDE_ATR_HYST = Number(process.env.COOLDOWN_OVERRIDE_ATR_HYST) || 0.7;
+const OVERRIDE_CAP_PER_HOUR = Number(process.env.OVERRIDE_CAP_PER_HOUR) || 3;
 
 // POST /api/cron/analyze - create new signal (15m sniping)
 router.post("/analyze", cronAuth, async (req, res) => {
@@ -71,12 +90,69 @@ router.post("/analyze", cronAuth, async (req, res) => {
           reasoning: `Pre-filter skip: ${filter.reason}`,
           llm_model: "pre-filter",
           status: "closed",
-          raw_response: { filter },
+          raw_response: { filter, price: ind.price },
         })
         .select()
         .single();
       if (error) throw error;
       return res.json({ skipped: true, reason: filter.reason, signal: data, indicators: ind });
+    }
+
+    // Cooldown check: analisis terakhir pair ini (NO_TRADE / suppressed) masih baru?
+    // Jika ya, lewati Gemini UNLESS harga bergerak signifikan dari baseline
+    // (breakout/sweep) melewati threshold ATR adaptif dari timeframe 1H.
+    const { data: lastSig } = await supabase
+      .from("signals")
+      .select("direction, status, created_at, entry, raw_response")
+      .eq("pair", symbol)
+      .neq("llm_model", "cooldown")
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const lastSignal = lastSig?.[0];
+    const cooldownMs = NO_TRADE_COOLDOWN_MIN * 60000;
+    let isOverride = false;
+    if (
+      lastSignal &&
+      (lastSignal.direction === "NO_TRADE" || lastSignal.status === "suppressed") &&
+      Date.now() - new Date(lastSignal.created_at).getTime() < cooldownMs
+    ) {
+      // Override breakout: analisis tetap jika pergerakan melewati threshold ATR(1H).
+      const refPrice = lastSignal.raw_response?.price ?? lastSignal.entry;
+      let moveOk = false;
+      if (refPrice && ind.price) {
+        const absMove = Math.abs(ind.price - refPrice);
+        const klines1h = await fetchKlines(symbol, "1h", 200);
+        const atr1h = computeAtr(
+          klines1h.map((k) => k.high),
+          klines1h.map((k) => k.low),
+          klines1h.map((k) => k.close)
+        );
+        // Hysteresis: threshold naik jika analisis terakhir adalah hasil override.
+        const lastWasOverride = lastSignal.raw_response?.override === true;
+        const atrMult = lastWasOverride ? COOLDOWN_OVERRIDE_ATR_HYST : COOLDOWN_OVERRIDE_ATR;
+        const threshold = (atr1h ?? ind.atr ?? ind.price * 0.002) * atrMult;
+        if (absMove > threshold) {
+          // Cap: maksimal OVERRIDE_CAP_PER_HOUR override per jam per pair.
+          const cutoff = new Date(Date.now() - 60 * 60000).toISOString();
+          const { count: ovrCount } = await supabase
+            .from("signals")
+            .select("id", { count: "exact", head: true })
+            .eq("pair", symbol)
+            .gte("created_at", cutoff)
+            .filter("raw_response->>override", "eq", "true");
+          if (!ovrCount || ovrCount < OVERRIDE_CAP_PER_HOUR) {
+            moveOk = true;
+          }
+        }
+      }
+      if (!moveOk) {
+        return res.json({
+          skipped: true,
+          reason: `cooldown (${symbol} NO_TRADE/suppressed ${NO_TRADE_COOLDOWN_MIN}m lalu)`,
+          indicators: ind,
+        });
+      }
+      isOverride = true;
     }
 
     const prompt = buildPrompt({
@@ -130,12 +206,40 @@ router.post("/analyze", cronAuth, async (req, res) => {
         llm_model: llmModel,
         status,
         raw_prompt: prompt,
-        raw_response: gem,
+        raw_response: isOverride ? { ...gem, price: ind.price, override: true } : { ...gem, price: ind.price },
       })
       .select()
       .single();
 
     if (error) throw error;
+
+    // Batasi penyimpanan NO_TRADE: hapus yang paling lama jika melebihi cap,
+    // sehingga hanya ~KEEP_NO_TRADE terbaru yang tersimpan.
+    if (gem.direction === "NO_TRADE") {
+      try {
+        const { count } = await supabase
+          .from("signals")
+          .select("id", { count: "exact", head: true })
+          .eq("direction", "NO_TRADE");
+        if (count && count > KEEP_NO_TRADE) {
+          const excess = count - KEEP_NO_TRADE;
+          const { data: old } = await supabase
+            .from("signals")
+            .select("id")
+            .eq("direction", "NO_TRADE")
+            .order("created_at", { ascending: true })
+            .limit(excess);
+          if (old && old.length) {
+            await supabase.from("signals").delete().in(
+              "id",
+              old.map((o: any) => o.id)
+            );
+          }
+        }
+      } catch (trimErr) {
+        console.error("trim NO_TRADE error", trimErr);
+      }
+    }
 
     res.json({ signal: data, indicators: ind, gemini: gem, suppressed: status === "suppressed" });
   } catch (e: any) {

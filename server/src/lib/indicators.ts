@@ -9,6 +9,11 @@ export interface IndicatorResult {
   trend: "UP" | "DOWN" | "SIDEWAYS";
 }
 
+export function computeAtr(highs: number[], lows: number[], closes: number[], period = 14): number | null {
+  const atrArr = ATR.calculate({ high: highs, low: lows, close: closes, period });
+  return atrArr.length ? atrArr[atrArr.length - 1] : null;
+}
+
 export function computeIndicators(closes: number[], highs: number[], lows: number[]): IndicatorResult {
   const price = closes[closes.length - 1];
 
@@ -20,8 +25,7 @@ export function computeIndicators(closes: number[], highs: number[], lows: numbe
   const ema50 = ema50Arr.length ? ema50Arr[ema50Arr.length - 1] : null;
   const ema200 = ema200Arr.length ? ema200Arr[ema200Arr.length - 1] : null;
 
-  const atrArr = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
-  const atr = atrArr.length ? atrArr[atrArr.length - 1] : null;
+  const atr = computeAtr(highs, lows, closes, 14);
 
   let trend: IndicatorResult["trend"] = "SIDEWAYS";
   if (ema50 !== null && ema200 !== null) {
