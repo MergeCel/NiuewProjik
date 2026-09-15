@@ -164,12 +164,12 @@ WEEKLY LESSON:
 ${lesson}
 
 RULES (SNIPING):
-- Tunggu konfluensi setup: liquidity sweep / ChoCH (change of character) / retest order block + alignment Fibonacci & trend.
-- Jika sudah ada posisi aktif SEARAH dengan entry yang berjarak dekat, pilih NO_TRADE (jangan re-entry redundan).
+- SELEKTIF: lebih baik NO_TRADE daripada entry marginal. Hanya trade jika ada MINIMAL 2 konfluensi (liquidity sweep / ChoCH + retest order block + alignment Fibonacci & trend). JANGAN entry hanya karena harga retest EMA50/Fib tanpa konfirmasi struktur.
+- ANTI-OVER-TRADING: jika sudah ada posisi aktif SEARAH pada pair ini → NO_TRADE. Jangan pernah menganggapnya continuation/re-entry.
 - Jika confidence <70, output NO_TRADE.
-- Jangan ulangi pattern loss di atas.
+- Jangan ulangi pattern loss di atas (premature entry, SL terlalu ketat, blind entry di retracement).
 - Entry presisi, dekat price sekarang (max 0.2% deviasi), di zona kunci.
-- SL di belakang struktur (sweep low/high atau order block), minimal 0.6*ATR.
+- SL di belakang struktur (sweep low/high atau order block), MINIMAL 0.8*ATR — jangan terlalu ketat.
 - TP di level TEPAT: order block berikutnya, fib extension (1:2 / 1:4 / 2:5), atau swing — tidak harus RR tetap, boleh besar asal level valid.
 - Output JSON ONLY, no markdown.
 

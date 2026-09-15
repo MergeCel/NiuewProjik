@@ -266,6 +266,14 @@ router.post("/evaluate", cronAuth, async (req, res) => {
     if (error) throw error;
     if (!active || active.length === 0) return res.json({ price, evaluated: 0 });
 
+    // Idempotency guard: ambil outcome yang sudah ada untuk signal aktif ini,
+    // supaya signal yang gagal ditutup sebelumnya tidak menghasilkan outcome ganda.
+    const { data: existingOutcomes } = await supabase
+      .from("outcomes")
+      .select("signal_id")
+      .in("signal_id", active.map((s) => s.id));
+    const existingSet = new Set((existingOutcomes || []).map((o: any) => o.signal_id));
+
     const results: any[] = [];
     for (const sig of active) {
       let hit: "SL" | "TP" | null = null;
@@ -290,6 +298,16 @@ router.post("/evaluate", cronAuth, async (req, res) => {
       }
 
       if (hit && result) {
+        if (existingSet.has(sig.id)) {
+          // Sudah dievaluasi sebelumnya (penutupan sempat gagal) -> cukup tutup, tanpa outcome ganda.
+          const { error: closeErr } = await supabase
+            .from("signals")
+            .update({ status: "closed" })
+            .eq("id", sig.id);
+          if (closeErr) console.error("evaluate: close already-evaluated signal failed", sig.id, closeErr.message);
+          results.push({ id: sig.id, hit, result, price, skipped: "already-evaluated" });
+          continue;
+        }
         // Check timeout - if signal older than 48h without hit, mark BE
         const pnl = sig.direction === "LONG" ? price - sig.entry : sig.entry - price;
         const { error: outErr } = await supabase.from("outcomes").insert({
@@ -301,7 +319,11 @@ router.post("/evaluate", cronAuth, async (req, res) => {
         });
         if (outErr) throw outErr;
 
-        await supabase.from("signals").update({ status: "closed" }).eq("id", sig.id);
+        const { error: closeErr } = await supabase
+          .from("signals")
+          .update({ status: "closed" })
+          .eq("id", sig.id);
+        if (closeErr) console.error("evaluate: close signal failed", sig.id, closeErr.message);
         results.push({ id: sig.id, hit, result, price });
       }
     }
@@ -310,15 +332,28 @@ router.post("/evaluate", cronAuth, async (req, res) => {
     const cutoff = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
     const stale = (active || []).filter((s) => s.created_at < cutoff && !results.find((r) => r.id === s.id));
     for (const s of stale) {
-      const priceNow = price;
-      await supabase.from("outcomes").insert({
+      if (existingSet.has(s.id)) {
+        const { error: closeErr } = await supabase
+          .from("signals")
+          .update({ status: "closed" })
+          .eq("id", s.id);
+        if (closeErr) console.error("evaluate: close stale already-evaluated signal failed", s.id, closeErr.message);
+        results.push({ id: s.id, hit: "TIMEOUT", result: "BE", skipped: "already-evaluated" });
+        continue;
+      }
+      const { error: outErr } = await supabase.from("outcomes").insert({
         signal_id: s.id,
         result: "BE",
-        exit_price: priceNow,
+        exit_price: price,
         pnl_pips: 0,
         hit: "TIMEOUT",
       });
-      await supabase.from("signals").update({ status: "closed" }).eq("id", s.id);
+      if (outErr) throw outErr;
+      const { error: closeErr } = await supabase
+        .from("signals")
+        .update({ status: "closed" })
+        .eq("id", s.id);
+      if (closeErr) console.error("evaluate: close stale signal failed", s.id, closeErr.message);
       results.push({ id: s.id, hit: "TIMEOUT", result: "BE" });
     }
 
