@@ -42,6 +42,7 @@ create table if not exists ai_reflections (
   week_start date not null,
   summary text,
   lesson text,
+  strategy_notes text,
   winrate_week numeric,
   created_at timestamptz default now()
 );

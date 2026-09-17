@@ -101,6 +101,22 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
   return { signal: noTrade(`Gemini models unavailable: ${lastError?.message}`), model: modelsToTry[0] };
 }
 
+export async function callGroundedGemini(prompt: string): Promise<{ text: string; model: string }> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY missing");
+  const modelName = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    // googleSearch: grounding sederhana dari Gemini API (gratis).
+    // Tipe SDK 0.21 belum memuatnya (hanya GoogleSearchRetrievalTool), cast saja.
+    tools: [{ googleSearch: {} }] as any,
+    generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
+  });
+  const result = await model.generateContent(prompt);
+  return { text: result.response.text(), model: modelName };
+}
+
 export function buildPrompt(params: {
   pair: string;
   timeframe: string;
@@ -116,6 +132,9 @@ export function buildPrompt(params: {
   activePositions: any[];
   recentLosses: any[];
   weeklyLesson: string | null;
+  strategyNotes: string | null;
+  fearGreed: { value: number; classification: string } | null;
+  news: { title: string; source: string }[];
   klinesSummary: string;
 }): string {
   const lossesText =
@@ -129,6 +148,15 @@ export function buildPrompt(params: {
           .join("\n");
 
   const lesson = params.weeklyLesson || "Belum ada lesson mingguan.";
+  const strategyNotes = params.strategyNotes || "Belum ada strategy notes.";
+  const sentiment =
+    params.fearGreed === null
+      ? "n/a"
+      : `F&G ${params.fearGreed.value} (${params.fearGreed.classification})`;
+  const newsText =
+    params.news.length === 0
+      ? "Tidak ada berita."
+      : params.news.map((n) => `- [${n.source}] ${n.title}`).join("\n");
 
   const activeText =
     params.activePositions.length === 0
@@ -162,6 +190,13 @@ ${lossesText}
 
 WEEKLY LESSON:
 ${lesson}
+
+STRATEGY NOTES (hasil riset AI minggu lalu, terapkan):
+${strategyNotes}
+
+MARKET SENTIMENT:
+Fear & Greed: ${sentiment}
+Berita terkini: ${newsText}
 
 RULES (SNIPING):
 - SELEKTIF: lebih baik NO_TRADE daripada entry marginal. Hanya trade jika ada MINIMAL 2 konfluensi (liquidity sweep / ChoCH + retest order block + alignment Fibonacci & trend). JANGAN entry hanya karena harga retest EMA50/Fib tanpa konfirmasi struktur.

@@ -2,7 +2,8 @@ import { Router } from "express";
 import { fetchKlines, fetchCurrentPrice } from "../lib/binance.js";
 import { computeIndicators, computeSwingLevels, shouldCallLLM, computeAtr } from "../lib/indicators.js";
 import { checkDuplicate, getActivePositions } from "../lib/dedup.js";
-import { buildPrompt, callGemini, extractJson } from "../lib/gemini.js";
+import { buildPrompt, callGemini, callGroundedGemini, extractJson } from "../lib/gemini.js";
+import { fetchFearGreed, fetchCryptoNews } from "../lib/market.js";
 import { supabase } from "../lib/supabase.js";
 import { cronAuth } from "../middleware/auth.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -57,7 +58,7 @@ router.post("/analyze", cronAuth, async (req, res) => {
 
     const { data: reflection } = await supabase
       .from("ai_reflections")
-      .select("lesson")
+      .select("lesson, strategy_notes")
       .order("week_start", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -155,6 +156,10 @@ router.post("/analyze", cronAuth, async (req, res) => {
       isOverride = true;
     }
 
+    // Data sentimen (Fear & Greed + berita) — gratis, tanpa API key terpisah.
+    // Hanya diambil saat akan memanggil Gemini.
+    const [fearGreedData, newsData] = await Promise.all([fetchFearGreed(), fetchCryptoNews(5)]);
+
     const prompt = buildPrompt({
       pair: formatPair(symbol),
       timeframe: interval,
@@ -170,6 +175,9 @@ router.post("/analyze", cronAuth, async (req, res) => {
       activePositions,
       recentLosses: losses,
       weeklyLesson: reflection?.lesson || null,
+      strategyNotes: reflection?.strategy_notes || null,
+      fearGreed: fearGreedData,
+      news: newsData,
       klinesSummary: last5,
     });
 
@@ -410,19 +418,52 @@ router.post("/reflect", cronAuth, async (req, res) => {
       lesson = `Auto lesson: winrate ${winrate.toFixed(1)}%, avoid low confidence trades`;
     }
 
+    // Evaluasi strategi via Gemini dengan Google Search grounding (berita/YouTube/web).
+    // Membandingkan praktik terbaik SMC/Fib sniping dengan cara bot trading minggu ini.
+    const [fearGreedData, newsData] = await Promise.all([fetchFearGreed(), fetchCryptoNews(5)]);
+    let strategyNotes = null;
+    try {
+      const groundedPrompt = `You are a crypto trading strategist. Using Google Search, research current best-practice rules for BTC/altcoin 15m sniping trading: Smart Money Concepts (liquidity sweep, order block, Change of Character), Fibonacci retracement/extension sniping, and rules to avoid over-trading and premature entries.
+
+Then evaluate the strategy this bot applied this week.
+
+Bot week summary: ${summary}
+Fear & Greed: ${fearGreedData ? `${fearGreedData.value} (${fearGreedData.classification})` : "n/a"}
+Top news: ${newsData.slice(0, 3).map((n) => n.title).join(" | ") || "none"}
+Trades this week:
+${JSON.stringify(
+  weekSignals.slice(0, 20).map((s: any) => ({
+    dir: s.direction,
+    entry: s.entry,
+    sl: s.sl,
+    tp: s.tp,
+    conf: s.confidence,
+    reasoning: s.reasoning,
+    outcome: s.outcomes?.[0],
+  }))
+)}
+
+Provide: (1) what the bot is doing right, (2) the biggest repeated mistake patterns in its trades, (3) 3-5 concrete actionable RULE adjustments for next week. Be specific and practical. Max 1200 chars, plain text.`;
+      const grounded = await callGroundedGemini(groundedPrompt);
+      strategyNotes = grounded.text.slice(0, 2000);
+    } catch (e) {
+      console.warn("reflect grounded eval fail", e);
+    }
+
     const { data, error } = await supabase
       .from("ai_reflections")
       .insert({
         week_start: new Date().toISOString().slice(0, 10),
         summary,
         lesson,
+        strategy_notes: strategyNotes,
         winrate_week: winrate,
       })
       .select()
       .single();
     if (error) throw error;
 
-    res.json({ reflection: data });
+    res.json({ reflection: data, grounded: !!strategyNotes });
   } catch (e: any) {
     console.error("reflect error", e);
     res.status(500).json({ error: e.message });

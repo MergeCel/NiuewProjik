@@ -8,7 +8,7 @@ delete from outcomes
 where id in (
   select id from (
     select id,
-           row_number() over (partition by signal_id order by evaluated_at asc, created_at asc) rn
+           row_number() over (partition by signal_id order by evaluated_at asc, id asc) rn
     from outcomes
   ) t
   where t.rn > 1
