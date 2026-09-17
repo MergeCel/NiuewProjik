@@ -101,20 +101,59 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
   return { signal: noTrade(`Gemini models unavailable: ${lastError?.message}`), model: modelsToTry[0] };
 }
 
-export async function callGroundedGemini(prompt: string): Promise<{ text: string; model: string }> {
+export async function callGroundedGemini(prompt: string): Promise<{ text: string; model: string; grounded: boolean }> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
-  const modelName = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+
+  const preferred = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+  const modelsToTry = [preferred, ...MODEL_FALLBACKS.filter((m) => m !== preferred)];
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: modelName,
-    // googleSearch: grounding sederhana dari Gemini API (gratis).
-    // Tipe SDK 0.21 belum memuatnya (hanya GoogleSearchRetrievalTool), cast saja.
-    tools: [{ googleSearch: {} }] as any,
-    generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
-  });
-  const result = await model.generateContent(prompt);
-  return { text: result.response.text(), model: modelName };
+  const isQuota = (msg: string) =>
+    msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota");
+
+  // 1) Coba grounding googleSearch (kuota TERPISAH dari RPD biasa, sering habis
+  //    di free tier). Satu percobaan per model, tanpa sleep lama (batas Vercel 60s).
+  let lastError: any;
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        // googleSearch: grounding sederhana dari Gemini API (gratis).
+        // Tipe SDK 0.21 belum memuatnya (hanya GoogleSearchRetrievalTool), cast saja.
+        tools: [{ googleSearch: {} }] as any,
+        generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
+      });
+      const result = await model.generateContent(prompt);
+      return { text: result.response.text(), model: modelName, grounded: true };
+    } catch (e) {
+      lastError = e;
+      console.warn(`grounded ${modelName} failed:`, (e as Error).message);
+      if (isQuota(String((e as Error).message))) await sleep(2000);
+    }
+  }
+
+  // 2) Fallback: panggilan PLAIN tanpa grounding agar strategy_notes tetap terisi
+  //    (evaluasi strategi dari pengetahuan model) walau grounding tak tersedia.
+  console.warn("grounding unavailable, falling back to plain call:", lastError?.message);
+  for (const modelName of modelsToTry) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
+        });
+        const result = await model.generateContent(prompt);
+        return { text: result.response.text(), model: modelName, grounded: false };
+      } catch (e) {
+        lastError = e;
+        const msg = String((e as Error).message);
+        console.warn(`plain ${modelName} attempt ${attempt} failed:`, msg);
+        if (isQuota(msg) && attempt < 2) await sleep(30000);
+      }
+    }
+  }
+  throw lastError;
 }
 
 export function buildPrompt(params: {
