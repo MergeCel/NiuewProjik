@@ -207,7 +207,7 @@ export function buildPrompt(params: {
           )
           .join("\n");
 
-  return `You are a ${params.pair} ${params.timeframe} SNIPER trader using Smart Money Concepts (SMC) + Fibonacci. Goal: entry presisi di level kunci, SL ketat di belakang struktur, TP di tempat yang TEPAT (order block berikutnya / fib extension 1:2, 1:4, 2:5, atau swing) — bukan RR acak. Selektif: hanya trade jika ada konfluensi.
+  return `You are a ${params.pair} ${params.timeframe} SNIPER trader using Smart Money Concepts (SMC) + Fibonacci. Goal: entry presisi di level kunci, SL di belakang struktur, TP di level yang TEPAT (order block berikutnya / fib extension 1:2, 1:4, 2:5, atau swing) — bukan RR acak.
 
 MARKET DATA (Binance ${params.timeframe}, ${params.pair}):
 Price: ${params.price}
@@ -230,16 +230,22 @@ ${lossesText}
 WEEKLY LESSON:
 ${lesson}
 
-STRATEGY NOTES (hasil riset AI minggu lalu, terapkan):
+STRATEGY NOTES (rekomendasi evaluasi mingguan — BANDINGKAN dengan 10 loss terakhir di LEARNING FROM MISTAKES: jika rekomendasi ini terbukti mengatasi pola kesalahan yang muncul di loss → TERAPKAN. Jika tidak relevan dengan loss pattern kita → abaikan):
 ${strategyNotes}
 
-MARKET SENTIMENT:
+MARKET SENTIMENT (KONTEKS PENDUKUNG, bukan larangan):
 Fear & Greed: ${sentiment}
 Berita terkini: ${newsText}
 
-RULES (SNIPING):
-- SELEKTIF: lebih baik NO_TRADE daripada entry marginal. Hanya trade jika ada MINIMAL 2 konfluensi (liquidity sweep / ChoCH + retest order block + alignment Fibonacci & trend). JANGAN entry hanya karena harga retest EMA50/Fib tanpa konfirmasi struktur.
-- ANTI-OVER-TRADING: jika sudah ada posisi aktif SEARAH pada pair ini → NO_TRADE. Jangan pernah menganggapnya continuation/re-entry.
+KEPUTUSAN & RULES:
+- DASAR UTAMA = setup TEKNIKAL (SMC + Fib + trend). F&G & berita adalah PENDUKUNG yang menambah/mengurangi CONFIDENCE — BUKAN filter yang melarang arah tertentu.
+- GUNAKAN BERITA & F&G SECARA CERDAS: baca konteks berita terkini untuk pair ini (isu keamanan/keuangan exchange, kebijakan, berita makro). Nilai: apakah berita negatif/positif utk pair ini, apakah penanganannya baik & terkonfirmasi, bagaimana sentimen umum pengguna/forum. Ubah menjadi PENYESUAIAN CONFIDENCE:
+  * sentimen/berita positif + setup teknikal LONG selaras → confidence NAIK;
+  * berita/sentimen BURUK utk pair (walau teknikal LONG) → TURUNKAN confidence, pertimbangkan NO_TRADE atau SHORT;
+  * jika berniat SHORT tapi teknikal BELUM mendukung → tunggu konfirmasi teknikal ATAU momen berita yang tepat; JANGAN paksa.
+- KONFIRMASI MASUK: cukup 1 indikasi struktur yang jelas (retest order block / sweep likuiditas / ChoCH) yang selaras trend + Fib/EMA. JANGAN menuntut konfirmasi sempurna — hindari MISS sinyal yang valid.
+- ANTI-OVER-TRADING: jika sudah ada posisi aktif SEARAH pada pair ini → NO_TRADE (jangan continuation/re-entry).
+- COOLDOWN SELEKTIF (bila strategy_notes mendukung & data loss menunjukkan over-trading): batasi frekuensi entry — jangan entry berulang pada pair yang sama dalam ~4 jam kecuali ada pergeseran struktur jelas (sweep/ChoCH/order block baru). Ini menekan eksekusi fatigue & false breakout, sesuai data loss minggu lalu.
 - Jika confidence <70, output NO_TRADE.
 - Jangan ulangi pattern loss di atas (premature entry, SL terlalu ketat, blind entry di retracement).
 - Entry presisi, dekat price sekarang (max 0.2% deviasi), di zona kunci.
@@ -254,7 +260,7 @@ Format JSON:
   "sl": number | null,
   "tp": number | null,
   "confidence": number (0-100),
-  "reasoning": "string max 300 chars, jelaskan setup & level yang dipakai (order block/fib/ChoCH) & lesson applied",
+  "reasoning": "string max 300 chars, jelaskan setup teknikal + bagaimana F&G/berita memengaruhi confidence + lesson applied",
   "rr": number | null
 }
 `;
