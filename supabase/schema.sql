@@ -31,6 +31,7 @@ create table if not exists outcomes (
   result text not null check (result in ('WIN','LOSS','BE')),
   exit_price numeric,
   pnl_pips numeric,
+  pnl_r numeric,
   hit text check (hit in ('SL','TP','TIMEOUT')),
   evaluated_at timestamptz default now()
 );

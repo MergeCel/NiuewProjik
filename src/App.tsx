@@ -25,6 +25,8 @@ type Stats = {
   suppressed: number;
   winrate: number;
   pnl: number;
+  sumR: number;
+  avgR: number;
   reflection?: { lesson: string; summary: string; winrate_week: number };
 };
 
@@ -86,7 +88,7 @@ export default function App() {
     .reverse()
     .map((s) => ({
       time: new Date(s.created_at).toLocaleDateString("id-ID", { month: "short", day: "numeric" }),
-      pnl: s.outcomes?.[0]?.pnl_pips ?? 0,
+      pnl: s.outcomes?.[0]?.pnl_r ?? 0,
       win: s.outcomes?.[0]?.result === "WIN" ? 1 : 0,
     }));
 
@@ -139,7 +141,7 @@ export default function App() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
           <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>Total Signals</div><div style={{ fontSize: 22, fontWeight: 700 }}>{stats.total}</div></div>
           <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>Winrate</div><div style={{ fontSize: 22, fontWeight: 700, color: stats.winrate >= 50 ? "#6ee7b7" : "#fca5a5" }}>{stats.winrate}%</div><div style={{ fontSize: 11 }}>{stats.wins}W / {stats.losses}L / {stats.be}BE</div></div>
-          <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>P/L Cumulative</div><div style={{ fontSize: 22, fontWeight: 700, color: stats.pnl >= 0 ? "#6ee7b7" : "#fca5a5" }}>{stats.pnl.toFixed(2)}</div></div>
+          <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>P/L Cumulative (R)</div><div style={{ fontSize: 22, fontWeight: 700, color: stats.sumR >= 0 ? "#6ee7b7" : "#fca5a5" }}>{stats.sumR.toFixed(2)} R</div><div style={{ fontSize: 11 }}>avg {stats.avgR.toFixed(2)} R/trade</div></div>
           <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>Active</div><div style={{ fontSize: 22, fontWeight: 700 }}>{stats.active}</div></div>
           <div className="card"><div style={{ color: "#9ca3af", fontSize: 12 }}>Suppressed (anti-spam)</div><div style={{ fontSize: 22, fontWeight: 700, color: "#fbbf24" }}>{stats.suppressed}</div></div>
         </div>
@@ -155,7 +157,7 @@ export default function App() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
         <div className="card">
-          <div style={{ fontWeight: 700, marginBottom: 8, fontSize: 13 }}>Cumulative P/L</div>
+          <div style={{ fontWeight: 700, marginBottom: 8, fontSize: 13 }}>Cumulative P/L (R)</div>
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={cumData}>
               <XAxis dataKey="time" tick={{ fontSize: 10 }} />
@@ -188,7 +190,7 @@ export default function App() {
             <table>
               <thead>
                 <tr>
-                  <th>Waktu</th><th>Pair</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Hit</th><th>Result</th><th>PnL</th>
+                  <th>Waktu</th><th>Pair</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Hit</th><th>Result</th><th>PnL (R)</th>
                 </tr>
               </thead>
               <tbody>
@@ -203,7 +205,7 @@ export default function App() {
                       <td>{out?.exit_price ?? "-"}</td>
                       <td>{out?.hit ?? "-"}</td>
                       <td><span className={`badge ${out?.result === "WIN" ? "badge-win" : out?.result === "LOSS" ? "badge-loss" : ""}`}>{out?.result ?? "-"}</span></td>
-                      <td>{out?.pnl_pips?.toFixed(2) ?? "-"}</td>
+                      <td>{out?.pnl_r != null ? `${out.pnl_r.toFixed(2)}R` : "-"}</td>
                     </tr>
                   );
                 })}

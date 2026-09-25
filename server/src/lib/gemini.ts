@@ -135,22 +135,20 @@ export async function callGroundedGemini(prompt: string): Promise<{ text: string
 
   // 2) Fallback: panggilan PLAIN tanpa grounding agar strategy_notes tetap terisi
   //    (evaluasi strategi dari pengetahuan model) walau grounding tak tersedia.
+  //    TANPA sleep lama — batas Vercel maxDuration 60s (reflect 504 bila melebihi).
   console.warn("grounding unavailable, falling back to plain call:", lastError?.message);
   for (const modelName of modelsToTry) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const model = genAI.getGenerativeModel({
-          model: modelName,
-          generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
-        });
-        const result = await model.generateContent(prompt);
-        return { text: result.response.text(), model: modelName, grounded: false };
-      } catch (e) {
-        lastError = e;
-        const msg = String((e as Error).message);
-        console.warn(`plain ${modelName} attempt ${attempt} failed:`, msg);
-        if (isQuota(msg) && attempt < 2) await sleep(30000);
-      }
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
+      });
+      const result = await model.generateContent(prompt);
+      return { text: result.response.text(), model: modelName, grounded: false };
+    } catch (e) {
+      lastError = e;
+      console.warn(`plain ${modelName} failed:`, (e as Error).message);
+      await sleep(2000);
     }
   }
   throw lastError;
@@ -165,6 +163,11 @@ export function buildPrompt(params: {
   ema200: number | null;
   atr: number | null;
   trend: string;
+  htfBias: "UP" | "DOWN" | "SIDEWAYS";
+  htfPrice: number | null;
+  htfEma50: number | null;
+  htfEma200: number | null;
+  session: "HIGH" | "LOW";
   swingHigh: number;
   swingLow: number;
   fib: { lvl382: number; lvl50: number; lvl618: number };
@@ -221,6 +224,15 @@ Swing Low: ${params.swingLow.toFixed(2)}
 Fibonacci (retracement): 0.382: ${params.fib.lvl382.toFixed(2)} | 0.5: ${params.fib.lvl50.toFixed(2)} | 0.618: ${params.fib.lvl618.toFixed(2)}
 Recent klines: ${params.klinesSummary}
 
+HTF BIAS (4H — arah utama, wajib patuh):
+Trend 4H: ${params.htfBias}
+4H Price: ${params.htfPrice?.toFixed(2) ?? "n/a"}
+4H EMA50: ${params.htfEma50?.toFixed(2) ?? "n/a"}
+4H EMA200: ${params.htfEma200?.toFixed(2) ?? "n/a"}
+
+SESSION:
+Likuiditas: ${params.session === "HIGH" ? "Tinggi (London/NY)" : "RENDAH (Asia/off-hours)"}
+
 POSISI AKTIF (pair ini):
 ${activeText}
 
@@ -239,13 +251,16 @@ Berita terkini: ${newsText}
 
 KEPUTUSAN & RULES:
 - DASAR UTAMA = setup TEKNIKAL (SMC + Fib + trend). F&G & berita adalah PENDUKUNG yang menambah/mengurangi CONFIDENCE — BUKAN filter yang melarang arah tertentu.
+- LARANGAN ABSOLUT: JANGAN pernah memblokir SATU arah penuh (semua LONG ATAU semua SHORT) hanya karena F&G / berita / strategy_notes. F&G tinggi TIDAK melarang short; berita buruk utk satu koin TIDAK melarang semua trade pada koin itu. Guard ini MENGALAHKAN isi STRATEGY NOTES yang terkesan absolut — rekomendasi mingguan hanyalah saran, bukan hukum. Trade tetap diputuskan per-pair dari setup teknikal.
+- HTF BIAS (4H): trade HARUS searah bias 4H. Jika 4H DOWN → jangan LONG (entry long melawan tren 4H dilarang); jika 4H UP → jangan SHORT; jika 4H SIDEWAYS → fleksibel, pakai setup 15m.
+- SESSION: jika sesi LOW-liquidity (Asia/off-hours) → HANYA entry jika setup sangat kuat (confidence >=78) dan searah HTF bias; hindari entry marginal yang rawan sweep palsu.
 - GUNAKAN BERITA & F&G SECARA CERDAS: baca konteks berita terkini untuk pair ini (isu keamanan/keuangan exchange, kebijakan, berita makro). Nilai: apakah berita negatif/positif utk pair ini, apakah penanganannya baik & terkonfirmasi, bagaimana sentimen umum pengguna/forum. Ubah menjadi PENYESUAIAN CONFIDENCE:
   * sentimen/berita positif + setup teknikal LONG selaras → confidence NAIK;
   * berita/sentimen BURUK utk pair (walau teknikal LONG) → TURUNKAN confidence, pertimbangkan NO_TRADE atau SHORT;
   * jika berniat SHORT tapi teknikal BELUM mendukung → tunggu konfirmasi teknikal ATAU momen berita yang tepat; JANGAN paksa.
 - KONFIRMASI MASUK: cukup 1 indikasi struktur yang jelas (retest order block / sweep likuiditas / ChoCH) yang selaras trend + Fib/EMA. JANGAN menuntut konfirmasi sempurna — hindari MISS sinyal yang valid.
 - ANTI-OVER-TRADING: jika sudah ada posisi aktif SEARAH pada pair ini → NO_TRADE (jangan continuation/re-entry).
-- COOLDOWN SELEKTIF (bila strategy_notes mendukung & data loss menunjukkan over-trading): batasi frekuensi entry — jangan entry berulang pada pair yang sama dalam ~4 jam kecuali ada pergeseran struktur jelas (sweep/ChoCH/order block baru). Ini menekan eksekusi fatigue & false breakout, sesuai data loss minggu lalu.
+- COOLDOWN SELEKTIF (HANYA bila strategy_notes mendukung DAN data loss jelas menunjukkan over-trading pada pair itu): boleh membatasi frekuensi entry berulang pada pair yang sama dalam ~4 jam kecuali ada pergeseran struktur jelas. Ini SUATU PERTIMBANGAN, bukan larangan global — tidak pernah digunakan untuk menolak semua sinyal pair lain.
 - Jika confidence <70, output NO_TRADE.
 - Jangan ulangi pattern loss di atas (premature entry, SL terlalu ketat, blind entry di retracement).
 - Entry presisi, dekat price sekarang (max 0.2% deviasi), di zona kunci.

@@ -160,6 +160,22 @@ router.post("/analyze", cronAuth, async (req, res) => {
     // Hanya diambil saat akan memanggil Gemini.
     const [fearGreedData, newsData] = await Promise.all([fetchFearGreed(), fetchCryptoNews(5)]);
 
+    // HTF bias (4H) + session filter — konteks internasional utk kualitas entry.
+    let htf = { trend: "SIDEWAYS" as "UP" | "DOWN" | "SIDEWAYS", price: null as number | null, ema50: null as number | null, ema200: null as number | null };
+    try {
+      const klines4h = await fetchKlines(symbol, "4h", 200);
+      const htfInd = computeIndicators(
+        klines4h.map((k) => k.close),
+        klines4h.map((k) => k.high),
+        klines4h.map((k) => k.low)
+      );
+      htf = { trend: htfInd.trend, price: htfInd.price, ema50: htfInd.ema50, ema200: htfInd.ema200 };
+    } catch (e) {
+      console.warn("htf bias fetch failed", e);
+    }
+    const utcHour = new Date().getUTCHours();
+    const session = utcHour >= 7 && utcHour <= 20 ? "HIGH" : "LOW"; // London/NY high-liquidity
+
     const prompt = buildPrompt({
       pair: formatPair(symbol),
       timeframe: interval,
@@ -169,6 +185,11 @@ router.post("/analyze", cronAuth, async (req, res) => {
       ema200: ind.ema200,
       atr: ind.atr,
       trend: ind.trend,
+      htfBias: htf.trend,
+      htfPrice: htf.price,
+      htfEma50: htf.ema50,
+      htfEma200: htf.ema200,
+      session,
       swingHigh: swing.swingHigh,
       swingLow: swing.swingLow,
       fib: swing.fib,
@@ -318,11 +339,14 @@ router.post("/evaluate", cronAuth, async (req, res) => {
         }
         // Check timeout - if signal older than 48h without hit, mark BE
         const pnl = sig.direction === "LONG" ? price - sig.entry : sig.entry - price;
+        const risk = Math.abs(sig.entry - sig.sl);
+        const pnlR = risk > 0 ? (sig.direction === "LONG" ? (price - sig.entry) / risk : (sig.entry - price) / risk) : 0;
         const { error: outErr } = await supabase.from("outcomes").insert({
           signal_id: sig.id,
           result,
           exit_price: price,
           pnl_pips: pnl,
+          pnl_r: pnlR,
           hit,
         });
         if (outErr) throw outErr;
@@ -354,6 +378,7 @@ router.post("/evaluate", cronAuth, async (req, res) => {
         result: "BE",
         exit_price: price,
         pnl_pips: 0,
+        pnl_r: 0,
         hit: "TIMEOUT",
       });
       if (outErr) throw outErr;
@@ -423,7 +448,7 @@ router.post("/reflect", cronAuth, async (req, res) => {
     const [fearGreedData, newsData] = await Promise.all([fetchFearGreed(), fetchCryptoNews(5)]);
     let strategyNotes = null;
     try {
-      const groundedPrompt = `You are a crypto trading strategist. Using Google Search, research current best-practice rules for BTC/altcoin 15m sniping trading: Smart Money Concepts (liquidity sweep, order block, Change of Character), Fibonacci retracement/extension sniping, and rules to avoid over-trading and premature entries.
+      const groundedPrompt = `You are a crypto trading strategist. Using Google Search, research INTERNATIONAL (global, not only Indonesia) best-practice rules for BTC/altcoin 15m sniping trading: Smart Money Concepts (liquidity sweep, order block, Change of Character), Fibonacci retracement/extension sniping, risk management, and avoiding over-trading. Cross-check the video/blog strategies you find against current global market conditions (news, Fear & Greed).
 
 Then evaluate the strategy this bot applied this week.
 
@@ -443,7 +468,13 @@ ${JSON.stringify(
   }))
 )}
 
-Provide: (1) what the bot is doing right, (2) the biggest repeated mistake patterns in its trades, (3) 3-5 concrete actionable RULE adjustments for next week. Be specific and practical. Max 1200 chars, plain text.`;
+Provide: (1) what the bot is doing right, (2) the biggest repeated mistake patterns, (3) 3-5 CONCRETE RULE adjustments for next week.
+
+IMPORTANT OUTPUT RULES:
+- Write adjustments as CONDITIONAL recommendations ("consider doing X IF data shows Y"), NOT absolute prohibitions. NEVER output a rule like "disable all shorts when Fear & Greed > 70" or "lockout for 4 hours" as a hard law.
+- Explicitly weigh the trade-off: being too selective risks missing valid signals. Only recommend restraint where the bot's OWN loss data clearly shows the mistake.
+- Ground recommendations in the actual trades above, and mention which international strategy sources you compared.
+- Max 1200 chars, plain text.`;
       const grounded = await callGroundedGemini(groundedPrompt);
       strategyNotes = grounded.text.slice(0, 2000);
     } catch (e) {

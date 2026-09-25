@@ -40,7 +40,7 @@ router.get("/", async (req: Request, res: Response) => {
 // GET /api/signals/stats (optional ?pair= filter)
 router.get("/stats", async (req: Request, res: Response) => {
   const pair = (req.query.pair as string) || "";
-  let query = supabase.from("signals").select("*, outcomes(result, pnl_pips)");
+  let query = supabase.from("signals").select("*, outcomes(result, pnl_pips, pnl_r)");
   if (pair && pair !== "ALL") query = query.eq("pair", pair.toUpperCase());
   const { data: signals, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
@@ -54,6 +54,14 @@ router.get("/stats", async (req: Request, res: Response) => {
   const winrate = total ? (wins / (wins + losses || 1)) * 100 : 0;
 
   const pnl = signals.reduce((sum: number, s: any) => sum + (s.outcomes?.[0]?.pnl_pips || 0), 0);
+
+  // Return-on-Risk (R): profit diukur dalam satuan risiko. Lebih adil untuk
+  // membandingkan antar-pair / antar-trade dibanding poin mentah.
+  const outcomesWithR = signals
+    .map((s: any) => s.outcomes?.[0])
+    .filter((o: any) => o && typeof o.pnl_r === "number");
+  const sumR = outcomesWithR.reduce((sum: number, o: any) => sum + o.pnl_r, 0);
+  const avgR = outcomesWithR.length ? sumR / outcomesWithR.length : 0;
 
   const { data: reflection } = await supabase
     .from("ai_reflections")
@@ -71,6 +79,8 @@ router.get("/stats", async (req: Request, res: Response) => {
     suppressed,
     winrate: Number(winrate.toFixed(2)),
     pnl: Number(pnl.toFixed(2)),
+    sumR: Number(sumR.toFixed(2)),
+    avgR: Number(avgR.toFixed(2)),
     reflection,
     pairs: SUPPORTED_PAIRS,
     selectedPair: pair || "ALL",
