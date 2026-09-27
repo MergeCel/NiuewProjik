@@ -260,6 +260,7 @@ KEPUTUSAN & RULES:
   * jika berniat SHORT tapi teknikal BELUM mendukung → tunggu konfirmasi teknikal ATAU momen berita yang tepat; JANGAN paksa.
 - KONFIRMASI MASUK: cukup 1 indikasi struktur yang jelas (retest order block / sweep likuiditas / ChoCH) yang selaras trend + Fib/EMA. JANGAN menuntut konfirmasi sempurna — hindari MISS sinyal yang valid.
 - ANTI-OVER-TRADING: jika sudah ada posisi aktif SEARAH pada pair ini → NO_TRADE (jangan continuation/re-entry).
+- FLIP POSISI (BERLAWANAN): jika sudah ada posisi aktif dan Anda ingin mengambil arah BERLAWANAN → BOLEH HANYA bila news/sentimen TERKONFIRMASI jelas menunjukkan peralihan arah utk pair ini (contoh: berita bearish terkonfirmasi saat posisi LONG aktif, PLUS breakdown struktur/CHoCH selaras arah baru). Tanpa peralihan yang terkonfirmasi → JANGAN flip; hormati posisi aktif. Ini bukan izin stacking/rata-rata turun — flip hanya untuk reversal nyata.
 - COOLDOWN SELEKTIF (HANYA bila strategy_notes mendukung DAN data loss jelas menunjukkan over-trading pada pair itu): boleh membatasi frekuensi entry berulang pada pair yang sama dalam ~4 jam kecuali ada pergeseran struktur jelas. Ini SUATU PERTIMBANGAN, bukan larangan global — tidak pernah digunakan untuk menolak semua sinyal pair lain.
 - Jika confidence <70, output NO_TRADE.
 - Jangan ulangi pattern loss di atas (premature entry, SL terlalu ketat, blind entry di retracement).

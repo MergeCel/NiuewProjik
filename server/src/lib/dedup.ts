@@ -20,6 +20,7 @@ export async function checkDuplicate(
     .select("id, pair, direction, entry, created_at, status")
     .eq("pair", symbol)
     .eq("direction", direction)
+    .neq("status", "closed")
     .gte("created_at", since)
     .order("created_at", { ascending: false })
     .limit(10);
