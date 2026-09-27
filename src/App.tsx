@@ -269,7 +269,7 @@ export default function App() {
       </div>
 
       <div style={{ marginTop: 16, fontSize: 11, color: "#6b7280" }}>
-        Cron: Supabase pg_cron 15M → POST /api/cron/analyze (15m sniping, 10 pair) • Evaluate :10/:25/:40/:55 • Anti-spam: entry duplikat searah dalam 6 jam + 0.5xATR ditekan (status suppressed, jadi data belajar AI) • Learning loop injects last 10 losses + weekly lesson into Gemini prompt.
+        Cron: Supabase pg_cron 15M → POST /api/cron/analyze (15m sniping, 10 pair) • Evaluate tiap 5 menit (deteksi sentuhan wick candle SL/TP sejak entry, exit di harga level) • Anti-spam: entry duplikat searah dalam 6 jam + 0.5xATR ditekan (status suppressed, jadi data belajar AI) • Learning loop injects last 10 losses + weekly lesson into Gemini prompt.
       </div>
     </div>
   );

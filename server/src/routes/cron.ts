@@ -303,30 +303,50 @@ router.post("/evaluate", cronAuth, async (req, res) => {
       .in("signal_id", active.map((s) => s.id));
     const existingSet = new Set((existingOutcomes || []).map((o: any) => o.signal_id));
 
+    // Deteksi SL/TP pakai sentuhan candle (wick high/low) sejak entry — stop-trigger
+    // semantics. Harga live saja melewatkan wick yang menyentuh SL/TP lalu recovery
+    // sebelum tick evaluasi berikutnya (bug: "kena SL di chart tapi tidak closed").
+    const klines = await fetchKlines(symbol, "15m", 300).catch((e) => {
+      console.error("evaluate: klines fetch failed, live-price fallback", e);
+      return [];
+    });
+
     const results: any[] = [];
     for (const sig of active) {
-      let hit: "SL" | "TP" | null = null;
-      let result: "WIN" | "LOSS" | null = null;
+      if (sig.sl == null || sig.tp == null) continue; // tak bisa evaluasi tanpa SL/TP
 
-      if (sig.direction === "LONG") {
-        if (price <= sig.sl) {
-          hit = "SL";
-          result = "LOSS";
-        } else if (price >= sig.tp) {
-          hit = "TP";
-          result = "WIN";
-        }
-      } else if (sig.direction === "SHORT") {
-        if (price >= sig.sl) {
-          hit = "SL";
-          result = "LOSS";
-        } else if (price <= sig.tp) {
-          hit = "TP";
-          result = "WIN";
+      const createdMs = new Date(sig.created_at).getTime();
+      const candles = klines.filter((k) => k.closeTime >= createdMs);
+
+      let hit: "SL" | "TP" | null = null;
+
+      // Sentuhan level dari high/low candle (termasuk candle yang sedang berjalan).
+      const firstSl = candles.find((k) =>
+        sig.direction === "LONG" ? k.low <= sig.sl : k.high >= sig.sl
+      );
+      const firstTp = candles.find((k) =>
+        sig.direction === "LONG" ? k.high >= sig.tp : k.low <= sig.tp
+      );
+      // Jika SL & TP sama-sama tersentuh: pakai yang candle-nya lebih awal;
+      // candle sama -> SL menang (konservatif).
+      if (firstSl && (!firstTp || firstSl.openTime <= firstTp.openTime)) hit = "SL";
+      else if (firstTp) hit = "TP";
+
+      // Fallback: harga live saat ini melewati level (klines gagal / level di gap).
+      if (!hit) {
+        if (sig.direction === "LONG") {
+          if (price <= sig.sl) hit = "SL";
+          else if (price >= sig.tp) hit = "TP";
+        } else if (sig.direction === "SHORT") {
+          if (price >= sig.sl) hit = "SL";
+          else if (price <= sig.tp) hit = "TP";
         }
       }
 
-      if (hit && result) {
+      if (hit) {
+        // Exit di harga level yang tersentuh (isi stop order), bukan harga live.
+        const exitPrice = hit === "SL" ? sig.sl : sig.tp;
+        const result: "WIN" | "LOSS" = hit === "SL" ? "LOSS" : "WIN";
         if (existingSet.has(sig.id)) {
           // Sudah dievaluasi sebelumnya (penutupan sempat gagal) -> cukup tutup, tanpa outcome ganda.
           const { error: closeErr } = await supabase
@@ -334,17 +354,16 @@ router.post("/evaluate", cronAuth, async (req, res) => {
             .update({ status: "closed" })
             .eq("id", sig.id);
           if (closeErr) console.error("evaluate: close already-evaluated signal failed", sig.id, closeErr.message);
-          results.push({ id: sig.id, hit, result, price, skipped: "already-evaluated" });
+          results.push({ id: sig.id, hit, result, price: exitPrice, skipped: "already-evaluated" });
           continue;
         }
-        // Check timeout - if signal older than 48h without hit, mark BE
-        const pnl = sig.direction === "LONG" ? price - sig.entry : sig.entry - price;
+        const pnl = sig.direction === "LONG" ? exitPrice - sig.entry : sig.entry - exitPrice;
         const risk = Math.abs(sig.entry - sig.sl);
-        const pnlR = risk > 0 ? (sig.direction === "LONG" ? (price - sig.entry) / risk : (sig.entry - price) / risk) : 0;
+        const pnlR = risk > 0 ? (sig.direction === "LONG" ? (exitPrice - sig.entry) / risk : (sig.entry - exitPrice) / risk) : 0;
         const { error: outErr } = await supabase.from("outcomes").insert({
           signal_id: sig.id,
           result,
-          exit_price: price,
+          exit_price: exitPrice,
           pnl_pips: pnl,
           pnl_r: pnlR,
           hit,
@@ -356,7 +375,7 @@ router.post("/evaluate", cronAuth, async (req, res) => {
           .update({ status: "closed" })
           .eq("id", sig.id);
         if (closeErr) console.error("evaluate: close signal failed", sig.id, closeErr.message);
-        results.push({ id: sig.id, hit, result, price });
+        results.push({ id: sig.id, hit, result, price: exitPrice });
       }
     }
 
