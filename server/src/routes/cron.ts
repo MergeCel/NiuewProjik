@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { fetchKlines, fetchCurrentPrice } from "../lib/binance.js";
-import { computeIndicators, computeSwingLevels, shouldCallLLM, computeAtr } from "../lib/indicators.js";
+import { computeIndicators, computeSwingLevels, shouldCallLLM, computeAtr, computeSupportResistance, computeFibExtensions } from "../lib/indicators.js";
+import type { SRResult } from "../lib/indicators.js";
 import { checkDuplicate, getActivePositions } from "../lib/dedup.js";
 import { buildPrompt, callGemini, callGroundedGemini, extractJson } from "../lib/gemini.js";
 import { fetchFearGreed, fetchCryptoNews } from "../lib/market.js";
@@ -176,6 +177,22 @@ router.post("/analyze", cronAuth, async (req, res) => {
     const utcHour = new Date().getUTCHours();
     const session = utcHour >= 7 && utcHour <= 20 ? "HIGH" : "LOW"; // London/NY high-liquidity
 
+    // Zona Support/Resistance dari OHLC (M15 + H4) + target Fibonacci extension.
+    const sr15 = computeSupportResistance(closes, highs, lows, ind.atr ?? 0);
+    let sr4h: SRResult | null = null;
+    try {
+      const klines4hForSr = await fetchKlines(symbol, "4h", 200);
+      sr4h = computeSupportResistance(
+        klines4hForSr.map((k) => k.close),
+        klines4hForSr.map((k) => k.high),
+        klines4hForSr.map((k) => k.low),
+        ind.atr ?? 0
+      );
+    } catch (e) {
+      console.warn("sr4h fetch failed", e);
+    }
+    const fibExt = computeFibExtensions(swing.swingHigh, swing.swingLow);
+
     const prompt = buildPrompt({
       pair: formatPair(symbol),
       timeframe: interval,
@@ -193,6 +210,15 @@ router.post("/analyze", cronAuth, async (req, res) => {
       swingHigh: swing.swingHigh,
       swingLow: swing.swingLow,
       fib: swing.fib,
+      fibExt,
+      support15: sr15.nearestSupport?.price ?? null,
+      resistance15: sr15.nearestResistance?.price ?? null,
+      support15Strength: sr15.nearestSupport?.strength ?? null,
+      resistance15Strength: sr15.nearestResistance?.strength ?? null,
+      support4h: sr4h?.nearestSupport?.price ?? null,
+      resistance4h: sr4h?.nearestResistance?.price ?? null,
+      support4hStrength: sr4h?.nearestSupport?.strength ?? null,
+      resistance4hStrength: sr4h?.nearestResistance?.strength ?? null,
       activePositions,
       recentLosses: losses,
       weeklyLesson: reflection?.lesson || null,
@@ -205,9 +231,99 @@ router.post("/analyze", cronAuth, async (req, res) => {
     const geminiResult = await callGemini(prompt);
     const gem = geminiResult.signal;
 
+    // --- Risk Guard: SL floor (1.5×ATR + S/R) & TP re-target struktural (RR ≥ 1.2) ---
+    // Gemini bebas menentukan SL selama >= floor; SL terlalu ketat (<1.5×ATR / di dalam zona S/R)
+    // rentan false breakout. Bila SL diperlebar merusak RR, TP ditarget ulang ke level struktural
+    // (S/R M15/H4, Fib extension, swing). Tanpa target valid -> NO_TRADE.
+    let slAdjusted = false;
+    let tpAdjusted = false;
+    let riskNote = "";
+    let rejectReason: string | null = null;
+    let rrValue: number | null = null;
+    let origSl: number | null = null;
+    let origTp: number | null = null;
+    if (gem.direction === "LONG" || gem.direction === "SHORT") {
+      const atrVal = ind.atr;
+      if (atrVal && atrVal > 0 && gem.entry != null) {
+        const entry = gem.entry;
+        const isLong = gem.direction === "LONG";
+        const nearZone = isLong ? sr15.nearestSupport : sr15.nearestResistance;
+        const structureDist = nearZone
+          ? isLong
+            ? Math.max(0, entry - (nearZone.price - 0.25 * atrVal))
+            : Math.max(0, (nearZone.price + 0.25 * atrVal) - entry)
+          : 0;
+        // Floor SL: minimal 1.5×ATR; di belakang zona S/R terdekat jika lebih jauh.
+        let minSlDist = Math.max(1.5 * atrVal, structureDist);
+        // Cap 3×ATR: diizinkan melebihi HANYA jika struktur S/R membenarkan (structureDist).
+        if (minSlDist > 3 * atrVal && structureDist <= 3 * atrVal) minSlDist = 3 * atrVal;
+
+        const curDist = gem.sl == null ? 0 : isLong ? entry - gem.sl : gem.sl - entry;
+        origSl = gem.sl;
+        origTp = gem.tp;
+        if (gem.sl == null || curDist < minSlDist) {
+          gem.sl = isLong ? entry - minSlDist : entry + minSlDist;
+          slAdjusted = true;
+        }
+        const risk = Math.abs(entry - gem.sl);
+        rrValue = gem.tp != null && risk > 0 ? Math.abs(gem.tp - entry) / risk : 0;
+
+        if (rrValue < 1.2) {
+          // Cari target struktural terdekat yang mengembalikan RR ≥ 1.2.
+          const ext = isLong ? fibExt.up : fibExt.down;
+          const candidates: { price: number | null; label: string }[] = isLong
+            ? [
+                { price: sr15.nearestResistance?.price ?? null, label: "S/R M15" },
+                { price: sr4h?.nearestResistance?.price ?? null, label: "S/R H4" },
+                { price: ext.tp1272, label: "Fib 1.272" },
+                { price: ext.tp1414, label: "Fib 1.414" },
+                { price: ext.tp1618, label: "Fib 1.618" },
+                { price: ext.tp200, label: "Fib 2.0" },
+                { price: swing.swingHigh, label: "Swing High" },
+              ]
+            : [
+                { price: sr15.nearestSupport?.price ?? null, label: "S/R M15" },
+                { price: sr4h?.nearestSupport?.price ?? null, label: "S/R H4" },
+                { price: ext.tp1272, label: "Fib 1.272" },
+                { price: ext.tp1414, label: "Fib 1.414" },
+                { price: ext.tp1618, label: "Fib 1.618" },
+                { price: ext.tp200, label: "Fib 2.0" },
+                { price: swing.swingLow, label: "Swing Low" },
+              ];
+          const valid = candidates
+            .filter(
+              (c) =>
+                c.price != null &&
+                (isLong ? c.price > entry : c.price < entry) &&
+                Math.abs(c.price - entry) / risk >= 1.2
+            )
+            .sort((a, b) => Math.abs((a.price as number) - entry) - Math.abs((b.price as number) - entry));
+
+          if (valid.length > 0) {
+            gem.tp = valid[0].price as number;
+            tpAdjusted = true;
+            riskNote = `TP ditarget ulang ke ${valid[0].label} (${gem.tp}) agar RR≥1.2 (SL floor ${minSlDist.toFixed(2)} = ${(minSlDist / atrVal).toFixed(1)}×ATR).`;
+          } else {
+            rejectReason = `RR ${rrValue.toFixed(2)} < 1.2 setelah SL floor ${minSlDist.toFixed(2)} (${(minSlDist / atrVal).toFixed(1)}×ATR); tidak ada target struktural (S/R M15/H4, Fib ext, swing) yang memulihkan RR. Entry dibatalkan.`;
+          }
+        } else if (slAdjusted) {
+          riskNote = `SL diperlebar ke floor (${minSlDist.toFixed(2)} = ${(minSlDist / atrVal).toFixed(1)}×ATR + S/R) agar tahan false breakout; RR ${rrValue.toFixed(2)} tetap terjaga.`;
+        }
+      }
+    }
+
+    // Jika risk guard menolak -> ubah jadi NO_TRADE transparan (bukan suppress).
+    if (rejectReason) {
+      gem.direction = "NO_TRADE";
+      gem.entry = null;
+      gem.sl = null;
+      gem.tp = null;
+      gem.reasoning = `${gem.reasoning}\n[RR-REJECT] ${rejectReason}`;
+    }
+
     // Validate RR if trade
     let status: string = "closed";
-    let llmModel = geminiResult.model;
+    let llmModel = rejectReason ? "rr-filter" : geminiResult.model;
     let reasoning = gem.reasoning;
 
     if (gem.direction !== "NO_TRADE") {
@@ -220,6 +336,27 @@ router.post("/analyze", cronAuth, async (req, res) => {
         reasoning = `Duplicate suppressed: same-direction entry ${dup.existing?.entry} dalam 0.5xATR (${ind.atr?.toFixed(2)}) pada 6 jam terakhir (signal ${dup.existing?.id}). ${gem.reasoning}`;
       }
     }
+
+    // Catatan risk guard di reasoning (transparan di dashboard & learning).
+    if (slAdjusted || tpAdjusted) reasoning = `${reasoning}\n[RISK-GUARD] ${riskNote}`;
+
+    const srSnapshot = {
+      support15: sr15.nearestSupport ? { price: sr15.nearestSupport.price, strength: sr15.nearestSupport.strength } : null,
+      resistance15: sr15.nearestResistance ? { price: sr15.nearestResistance.price, strength: sr15.nearestResistance.strength } : null,
+      support4h: sr4h?.nearestSupport ? { price: sr4h.nearestSupport.price, strength: sr4h.nearestSupport.strength } : null,
+      resistance4h: sr4h?.nearestResistance ? { price: sr4h.nearestResistance.price, strength: sr4h.nearestResistance.strength } : null,
+    };
+    const riskSnapshot = {
+      atr: ind.atr,
+      sr: srSnapshot,
+      fibExt,
+      rr: rrValue,
+      slAdjusted,
+      tpAdjusted,
+      rejected: !!rejectReason,
+      origSl,
+      origTp,
+    };
 
     const { data, error } = await supabase
       .from("signals")
@@ -235,7 +372,9 @@ router.post("/analyze", cronAuth, async (req, res) => {
         llm_model: llmModel,
         status,
         raw_prompt: prompt,
-        raw_response: isOverride ? { ...gem, price: ind.price, override: true } : { ...gem, price: ind.price },
+        raw_response: isOverride
+          ? { ...gem, ...riskSnapshot, override: true }
+          : { ...gem, ...riskSnapshot },
       })
       .select()
       .single();
@@ -437,6 +576,27 @@ router.post("/reflect", cronAuth, async (req, res) => {
     const winrate = tradeSignals.length ? (wins / tradeSignals.length) * 100 : 0;
 
     const summary = `Week ${since.slice(0, 10)}: ${tradeSignals.length} trades, ${wins}W/${losses}L, winrate ${winrate.toFixed(1)}% (${suppressedCount} suppressed by anti-spam)`;
+
+    // Metrik SL-width (dari ATR tersimpan di raw_response) — mendeteksi pola tight-SL -> false breakout.
+    const slWidths = (weekSignals || [])
+      .filter(
+        (s: any) =>
+          (s.direction === "LONG" || s.direction === "SHORT") &&
+          s.outcomes?.[0] &&
+          s.raw_response?.atr &&
+          s.entry &&
+          s.sl
+      )
+      .map((s: any) => ({
+        result: s.outcomes[0].result,
+        width: Math.abs(Number(s.entry) - Number(s.sl)) / Number(s.raw_response.atr),
+      }));
+    const median = (arr: number[]) => (arr.length ? arr[Math.floor(arr.length / 2)] : null);
+    const lossWidths = slWidths.filter((w) => w.result === "LOSS").map((w) => w.width).sort((a, b) => a - b);
+    const winWidths = slWidths.filter((w) => w.result === "WIN").map((w) => w.width).sort((a, b) => a - b);
+    const slMetric = slWidths.length
+      ? `SL width (×ATR): LOSS median ${median(lossWidths)?.toFixed(2) ?? "n/a"} (n=${lossWidths.length}); WIN median ${median(winWidths)?.toFixed(2) ?? "n/a"} (n=${winWidths.length}); LOSS dengan SL<1.5×ATR: ${lossWidths.filter((w) => w < 1.5).length}.`
+      : "SL width metric: n/a (belum ada signal dengan ATR tersimpan).";
     const lessonPrompt = `You are trading coach. Analyze this week trades:\n${JSON.stringify(
       weekSignals.slice(0, 20).map((s: any) => ({
         dir: s.direction,
@@ -472,6 +632,7 @@ router.post("/reflect", cronAuth, async (req, res) => {
 Then evaluate the strategy this bot applied this week.
 
 Bot week summary: ${summary}
+SL width analysis: ${slMetric}
 Fear & Greed: ${fearGreedData ? `${fearGreedData.value} (${fearGreedData.classification})` : "n/a"}
 Top news: ${newsData.slice(0, 3).map((n) => n.title).join(" | ") || "none"}
 Trades this week:

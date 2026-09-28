@@ -171,6 +171,15 @@ export function buildPrompt(params: {
   swingHigh: number;
   swingLow: number;
   fib: { lvl382: number; lvl50: number; lvl618: number };
+  fibExt: { up: { tp1272: number; tp1414: number; tp1618: number; tp200: number }; down: { tp1272: number; tp1414: number; tp1618: number; tp200: number } };
+  support15: number | null;
+  resistance15: number | null;
+  support15Strength: number | null;
+  resistance15Strength: number | null;
+  support4h: number | null;
+  resistance4h: number | null;
+  support4hStrength: number | null;
+  resistance4hStrength: number | null;
   activePositions: any[];
   recentLosses: any[];
   weeklyLesson: string | null;
@@ -233,6 +242,18 @@ Trend 4H: ${params.htfBias}
 SESSION:
 Likuiditas: ${params.session === "HIGH" ? "Tinggi (London/NY)" : "RENDAH (Asia/off-hours)"}
 
+SUPPORT/RESISTANCE ZONES (M15, dari klaster swing point OHLC):
+Nearest Support: ${params.support15 ?? "n/a"} (strength ${params.support15Strength ?? 0})
+Nearest Resistance: ${params.resistance15 ?? "n/a"} (strength ${params.resistance15Strength ?? 0})
+
+H4 ZONES (area kunci jangka menengah):
+H4 Support: ${params.support4h ?? "n/a"} (strength ${params.support4hStrength ?? 0})
+H4 Resistance: ${params.resistance4h ?? "n/a"} (strength ${params.resistance4hStrength ?? 0})
+
+FIB EXTENSION TARGETS (dari rentang swing):
+Up: 1.272=${params.fibExt.up.tp1272.toFixed(2)} | 1.414=${params.fibExt.up.tp1414.toFixed(2)} | 1.618=${params.fibExt.up.tp1618.toFixed(2)} | 2.0=${params.fibExt.up.tp200.toFixed(2)}
+Down: 1.272=${params.fibExt.down.tp1272.toFixed(2)} | 1.414=${params.fibExt.down.tp1414.toFixed(2)} | 1.618=${params.fibExt.down.tp1618.toFixed(2)} | 2.0=${params.fibExt.down.tp200.toFixed(2)}
+
 POSISI AKTIF (pair ini):
 ${activeText}
 
@@ -265,8 +286,9 @@ KEPUTUSAN & RULES:
 - Jika confidence <70, output NO_TRADE.
 - Jangan ulangi pattern loss di atas (premature entry, SL terlalu ketat, blind entry di retracement).
 - Entry presisi, dekat price sekarang (max 0.2% deviasi), di zona kunci.
-- SL di belakang struktur (sweep low/high atau order block), MINIMAL 0.8*ATR — jangan terlalu ketat.
-- TP di level TEPAT: order block berikutnya, fib extension (1:2 / 1:4 / 2:5), atau swing — tidak harus RR tetap, boleh besar asal level valid.
+- SL di belakang struktur, MINIMAL 1.5×ATR (Chandelier Exit style — 1.0×ATR terlalu ketat dan rentan false breakout/spike). Ideal: tepat di bawah nearest support (LONG) / di atas nearest resistance (SHORT) dengan buffer kecil, atau 1.5×ATR bila tidak ada zona S/R dekat. Maksimal ~3×ATR kecuali struktur S/R jelas lebih jauh.
+- TP di level struktural yang TEPAT: nearest resistance M15 atau H4 (LONG) / nearest support (SHORT), fib extension (1.272/1.414/1.618/2.0 dari daftar), order block berikutnya, liquidity pool, atau swing high/low. JANGAN asal menambah jarak TP hanya untuk menaikkan RR tanpa dasar struktur — TP harus punya konfirmasi level (S/R/Fib/liquidity/swing).
+- Jaga Risk-to-Reward ≥ 1.2. Jika SL diperlebar (struktur/ATR) menurunkan RR di bawah 1.2, pilih target struktural yang mengembalikan RR ≥ 1.2; bila tidak ada, pilih NO_TRADE.
 - Output JSON ONLY, no markdown.
 
 Format JSON:

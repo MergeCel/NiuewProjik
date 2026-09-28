@@ -59,6 +59,147 @@ export function computeSwingLevels(closes: number[]): SwingLevels {
   };
 }
 
+export interface SRZone {
+  price: number;        // Nilai rata-rata/bobot harga zona
+  minPrice: number;     // Batas bawah zona
+  maxPrice: number;     // Batas atas zona
+  strength: number;     // Jumlah titik swing dalam klaster (relevansi)
+  type: 'SUPPORT' | 'RESISTANCE';
+}
+
+export interface SRResult {
+  nearestSupport: SRZone | null;
+  nearestResistance: SRZone | null;
+  allZones: SRZone[];
+}
+
+/**
+ * Menghitung zona Support & Resistance menggunakan klastering Swing Point berbasis ±0.6 x ATR
+ */
+export function computeSupportResistance(
+  closes: number[],
+  highs: number[],
+  lows: number[],
+  atr: number,
+  pivotWindow: number = 3
+): SRResult {
+  if (closes.length < pivotWindow * 2 + 1 || atr <= 0) {
+    return { nearestSupport: null, nearestResistance: null, allZones: [] };
+  }
+
+  const currentPrice = closes[closes.length - 1];
+  const swingPoints: { price: number; type: 'HIGH' | 'LOW'; index: number }[] = [];
+
+  // 1. Ekstraksi Swing High & Swing Low (Pivot Points)
+  for (let i = pivotWindow; i < highs.length - pivotWindow; i++) {
+    let isHigh = true;
+    let isLow = true;
+
+    for (let j = 1; j <= pivotWindow; j++) {
+      if (highs[i] <= highs[i - j] || highs[i] <= highs[i + j]) isHigh = false;
+      if (lows[i] >= lows[i - j] || lows[i] >= lows[i + j]) isLow = false;
+    }
+
+    if (isHigh) swingPoints.push({ price: highs[i], type: 'HIGH', index: i });
+    if (isLow) swingPoints.push({ price: lows[i], type: 'LOW', index: i });
+  }
+
+  if (swingPoints.length === 0) {
+    return { nearestSupport: null, nearestResistance: null, allZones: [] };
+  }
+
+  // 2. Klastering 1D Berdasarkan Jarak ±0.6 x ATR
+  const threshold = 0.6 * atr;
+  const sortedPoints = [...swingPoints].sort((a, b) => a.price - b.price);
+
+  const clusters: { prices: number[]; indices: number[] }[] = [];
+  let currentCluster: { prices: number[]; indices: number[] } = {
+    prices: [sortedPoints[0].price],
+    indices: [sortedPoints[0].index],
+  };
+
+  for (let i = 1; i < sortedPoints.length; i++) {
+    const point = sortedPoints[i];
+    const clusterMean =
+      currentCluster.prices.reduce((a, b) => a + b, 0) / currentCluster.prices.length;
+
+    // Jika jarak titik ke rerata klaster saat ini <= 0.6 x ATR, gabungkan
+    if (Math.abs(point.price - clusterMean) <= threshold) {
+      currentCluster.prices.push(point.price);
+      currentCluster.indices.push(point.index);
+    } else {
+      clusters.push(currentCluster);
+      currentCluster = { prices: [point.price], indices: [point.index] };
+    }
+  }
+  clusters.push(currentCluster);
+
+  // 3. Konversi Klaster ke SRZone dengan Pembobotan Recency
+  const totalCandles = closes.length;
+  const zones: SRZone[] = clusters.map((c) => {
+    // Bobot recency: titik yang lebih baru memberikan bobot lebih tinggi
+    let weightedSum = 0;
+    let weightTotal = 0;
+
+    for (let k = 0; k < c.prices.length; k++) {
+      const recencyWeight = 1 + c.indices[k] / totalCandles; // Bobot 1.0 - 2.0
+      weightedSum += c.prices[k] * recencyWeight;
+      weightTotal += recencyWeight;
+    }
+
+    const avgPrice = weightedSum / weightTotal;
+    const minP = Math.min(...c.prices);
+    const maxP = Math.max(...c.prices);
+
+    return {
+      price: avgPrice,
+      minPrice: Math.min(minP, avgPrice - threshold / 2),
+      maxPrice: Math.max(maxP, avgPrice + threshold / 2),
+      strength: c.prices.length,
+      type: avgPrice < currentPrice ? 'SUPPORT' : 'RESISTANCE',
+    };
+  });
+
+  // 4. Filter Zona Support Terdekat & Resistance Terdekat
+  const supports = zones
+    .filter((z) => z.price < currentPrice)
+    .sort((a, b) => b.price - a.price); // Cari yang paling dekat di bawah harga saat ini
+
+  const resistances = zones
+    .filter((z) => z.price > currentPrice)
+    .sort((a, b) => a.price - b.price); // Cari yang paling dekat di atas harga saat ini
+
+  return {
+    nearestSupport: supports.length > 0 ? supports[0] : null,
+    nearestResistance: resistances.length > 0 ? resistances[0] : null,
+    allZones: zones,
+  };
+}
+
+export interface FibExtensions {
+  up: { tp1272: number; tp1414: number; tp1618: number; tp200: number };
+  down: { tp1272: number; tp1414: number; tp1618: number; tp200: number };
+}
+
+// Target Fibonacci extension di atas (up) dan bawah (down) rentang swing.
+export function computeFibExtensions(swingHigh: number, swingLow: number): FibExtensions {
+  const range = swingHigh - swingLow;
+  return {
+    up: {
+      tp1272: swingHigh + range * 0.272,
+      tp1414: swingHigh + range * 0.414,
+      tp1618: swingHigh + range * 0.618,
+      tp200: swingHigh + range,
+    },
+    down: {
+      tp1272: swingLow - range * 0.272,
+      tp1414: swingLow - range * 0.414,
+      tp1618: swingLow - range * 0.618,
+      tp200: swingLow - range,
+    },
+  };
+}
+
 export function shouldCallLLM(ind: IndicatorResult): { call: boolean; reason: string } {
   // Pre-filter tuned for 15m sniping
   if (ind.rsi === null || ind.ema50 === null || ind.ema200 === null) {
