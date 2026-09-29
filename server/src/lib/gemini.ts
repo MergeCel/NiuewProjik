@@ -1,16 +1,18 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-export interface GeminiSignal {
-  direction: "LONG" | "SHORT" | "NO_TRADE";
-  entry: number | null;
-  sl: number | null;
-  tp: number | null;
+// Gemini = QUALITATIVE CONTEXT CLASSIFIER (PRD Module B).
+// TIDAK menghitung Entry/SL/TP (itu tugas engine deterministik di cron.ts).
+export interface GeminiBias {
+  bias: "LONG" | "SHORT" | "NO_TRADE";
   confidence: number;
+  invalidation_condition: string;
   reasoning: string;
-  rr: number | null;
 }
 
-const MODEL_FALLBACKS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3-flash-preview"];
+// Urutan prioritas: model yang SAAT INI tersedia lebih dulu.
+// gemini-3.5-flash-lite & gemini-3.5-flash sedang 503 "high demand" (overload Google);
+// gemini-3-flash-preview adalah satu-satunya yang berjalan (kuota free-tier kecil ~20/hari).
+const MODEL_FALLBACKS = ["gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-3.5-flash"];
 
 export function extractJson(text: string): string {
   const t = text.trim();
@@ -26,22 +28,19 @@ export function extractJson(text: string): string {
   return t;
 }
 
-export async function callGemini(prompt: string, modelOverride?: string): Promise<{ signal: GeminiSignal; model: string }> {
+export async function callGemini(prompt: string, modelOverride?: string): Promise<{ signal: GeminiBias; model: string }> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
-  const preferred = modelOverride || process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+  const preferred = modelOverride || process.env.GEMINI_MODEL || "gemini-3-flash-preview";
   const modelsToTry = [preferred, ...MODEL_FALLBACKS.filter((m) => m !== preferred)];
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const noTrade = (reasoning: string): GeminiSignal => ({
-    direction: "NO_TRADE",
-    entry: null,
-    sl: null,
-    tp: null,
+  const noTrade = (reasoning: string): GeminiBias => ({
+    bias: "NO_TRADE",
     confidence: 0,
+    invalidation_condition: "Panggilan model gagal/kuota; tidak ada bias.",
     reasoning,
-    rr: null,
   });
 
   let lastError: any;
@@ -64,16 +63,14 @@ export async function callGemini(prompt: string, modelOverride?: string): Promis
         const text = result.response.text();
         // Clean possible markdown fences and extract JSON robustly
         const cleaned = extractJson(text);
-        const parsed = JSON.parse(cleaned) as GeminiSignal;
+        const parsed = JSON.parse(cleaned) as GeminiBias;
 
         // Validate
-        if (!["LONG", "SHORT", "NO_TRADE"].includes(parsed.direction)) {
-          throw new Error(`Invalid direction ${parsed.direction}`);
+        if (!["LONG", "SHORT", "NO_TRADE"].includes(parsed.bias)) {
+          throw new Error(`Invalid bias ${parsed.bias}`);
         }
-        if (parsed.direction !== "NO_TRADE") {
-          if (parsed.entry == null || parsed.sl == null || parsed.tp == null) {
-            throw new Error("Missing entry/sl/tp for trade");
-          }
+        if (typeof parsed.confidence !== "number" || parsed.confidence < 0 || parsed.confidence > 100) {
+          throw new Error("Invalid confidence");
         }
         return { signal: parsed, model: modelName };
       } catch (e) {
@@ -180,6 +177,7 @@ export function buildPrompt(params: {
   resistance4h: number | null;
   support4hStrength: number | null;
   resistance4hStrength: number | null;
+  structuralEvent: "SWEEP_BELOW" | "SWEEP_ABOVE" | null;
   activePositions: any[];
   recentLosses: any[];
   weeklyLesson: string | null;
@@ -219,7 +217,7 @@ export function buildPrompt(params: {
           )
           .join("\n");
 
-  return `You are a ${params.pair} ${params.timeframe} SNIPER trader using Smart Money Concepts (SMC) + Fibonacci. Goal: entry presisi di level kunci, SL di belakang struktur, TP di level yang TEPAT (order block berikutnya / fib extension 1:2, 1:4, 2:5, atau swing) — bukan RR acak.
+  return `You are a ${params.pair} ${params.timeframe} SNIPER QUALITATIVE CONTEXT CLASSIFIER using Smart Money Concepts (SMC) + Fibonacci. You do NOT calculate numeric Entry/SL/TP — a deterministic engine computes them. Your ONLY job: decide directional BIAS, CONFIDENCE, and INVALIDATION condition from the technical/qualitative context.
 
 MARKET DATA (Binance ${params.timeframe}, ${params.pair}):
 Price: ${params.price}
@@ -254,52 +252,54 @@ FIB EXTENSION TARGETS (dari rentang swing):
 Up: 1.272=${params.fibExt.up.tp1272.toFixed(2)} | 1.414=${params.fibExt.up.tp1414.toFixed(2)} | 1.618=${params.fibExt.up.tp1618.toFixed(2)} | 2.0=${params.fibExt.up.tp200.toFixed(2)}
 Down: 1.272=${params.fibExt.down.tp1272.toFixed(2)} | 1.414=${params.fibExt.down.tp1414.toFixed(2)} | 1.618=${params.fibExt.down.tp1618.toFixed(2)} | 2.0=${params.fibExt.down.tp200.toFixed(2)}
 
+STRUCTURAL EVENT (terdeteksi lokal, 5 candle terakhir):
+${params.structuralEvent === "SWEEP_BELOW"
+    ? "Likuiditas tersapu di bawah struktur / break support (potensi reversal-up ATAU kelanjutan turun — nilai dengan struktur/CHoCH)."
+    : params.structuralEvent === "SWEEP_ABOVE"
+    ? "Likuiditas tersapu di atas struktur / break resistance (potensi reversal-down ATAU kelanjutan naik — nilai dengan struktur/CHoCH)."
+    : "Volatilitas cukup, tanpa sweep/break level kunci — trade hanya jika setup sangat jelas."}
+
 POSISI AKTIF (pair ini):
 ${activeText}
 
-LEARNING FROM MISTAKES - 10 LOSS TERAKHIR:
+LEARNING FROM MISTAKES - 5 LOSS TERAKHIR:
 ${lossesText}
 
 WEEKLY LESSON:
 ${lesson}
 
-STRATEGY NOTES (rekomendasi evaluasi mingguan — BANDINGKAN dengan 10 loss terakhir di LEARNING FROM MISTAKES: jika rekomendasi ini terbukti mengatasi pola kesalahan yang muncul di loss → TERAPKAN. Jika tidak relevan dengan loss pattern kita → abaikan):
+STRATEGY NOTES (rekomendasi evaluasi mingguan — BANDINGKAN dengan 5 loss terakhir di LEARNING FROM MISTAKES: jika rekomendasi ini terbukti mengatasi pola kesalahan yang muncul di loss → TERAPKAN. Jika tidak relevan dengan loss pattern kita → abaikan):
 ${strategyNotes}
 
 MARKET SENTIMENT (KONTEKS PENDUKUNG, bukan larangan):
 Fear & Greed: ${sentiment}
 Berita terkini: ${newsText}
 
-KEPUTUSAN & RULES:
+KEPUTUSAN & RULES (ANDA HANYA KLASIFIKASI ARAH — JANGAN HITUNG ANGKA):
+- Peran Anda = QUALITATIVE CONTEXT CLASSIFIER. Entry, SL, TP, RR dihitung oleh ENGINE deterministik. JANGAN mengeluarkan angka level — hanya bias + confidence + invalidation_condition + reasoning.
 - DASAR UTAMA = setup TEKNIKAL (SMC + Fib + trend). F&G & berita adalah PENDUKUNG yang menambah/mengurangi CONFIDENCE — BUKAN filter yang melarang arah tertentu.
-- LARANGAN ABSOLUT: JANGAN pernah memblokir SATU arah penuh (semua LONG ATAU semua SHORT) hanya karena F&G / berita / strategy_notes. F&G tinggi TIDAK melarang short; berita buruk utk satu koin TIDAK melarang semua trade pada koin itu. Guard ini MENGALAHKAN isi STRATEGY NOTES yang terkesan absolut — rekomendasi mingguan hanyalah saran, bukan hukum. Trade tetap diputuskan per-pair dari setup teknikal.
-- HTF BIAS (4H): trade HARUS searah bias 4H. Jika 4H DOWN → jangan LONG (entry long melawan tren 4H dilarang); jika 4H UP → jangan SHORT; jika 4H SIDEWAYS → fleksibel, pakai setup 15m.
-- SESSION: jika sesi LOW-liquidity (Asia/off-hours) → HANYA entry jika setup sangat kuat (confidence >=78) dan searah HTF bias; hindari entry marginal yang rawan sweep palsu.
+- LARANGAN ABSOLUT: JANGAN pernah memblokir SATU arah penuh (semua LONG ATAU semua SHORT) hanya karena F&G / berita / strategy_notes. F&G tinggi TIDAK melarang short; berita buruk utk satu koin TIDAK melarang semua trade pada koin itu. Guard ini MENGALAHKAN isi STRATEGY NOTES yang terkesan absolut — rekomendasi mingguan hanyalah saran, bukan hukum.
+- HTF BIAS (4H): bias HARUS searah trend 4H. Jika 4H DOWN → bias LONG dilarang; jika 4H UP → bias SHORT dilarang; jika 4H SIDEWAYS → fleksibel.
+- SESSION: jika sesi LOW-liquidity (Asia/off-hours) → HANYA bias LONG/SHORT jika confidence >=78 dan searah HTF bias; hindari bias marginal.
 - GUNAKAN BERITA & F&G SECARA CERDAS: baca konteks berita terkini untuk pair ini (isu keamanan/keuangan exchange, kebijakan, berita makro). Nilai: apakah berita negatif/positif utk pair ini, apakah penanganannya baik & terkonfirmasi, bagaimana sentimen umum pengguna/forum. Ubah menjadi PENYESUAIAN CONFIDENCE:
   * sentimen/berita positif + setup teknikal LONG selaras → confidence NAIK;
   * berita/sentimen BURUK utk pair (walau teknikal LONG) → TURUNKAN confidence, pertimbangkan NO_TRADE atau SHORT;
   * jika berniat SHORT tapi teknikal BELUM mendukung → tunggu konfirmasi teknikal ATAU momen berita yang tepat; JANGAN paksa.
-- KONFIRMASI MASUK: cukup 1 indikasi struktur yang jelas (retest order block / sweep likuiditas / ChoCH) yang selaras trend + Fib/EMA. JANGAN menuntut konfirmasi sempurna — hindari MISS sinyal yang valid.
-- ANTI-OVER-TRADING: jika sudah ada posisi aktif SEARAH pada pair ini → NO_TRADE (jangan continuation/re-entry).
+- KONFIRMASI MASUK: cukup 1 indikasi struktur yang jelas (retest order block / sweep likuiditas / ChoCH) yang selaras trend. JANGAN menuntut konfirmasi sempurna — hindari MISS sinyal yang valid.
+- ANTI-OVER-TRADING: jika sudah ada posisi aktif SEARAH pada pair ini → bias NO_TRADE (jangan continuation/re-entry).
 - FLIP POSISI (BERLAWANAN): jika sudah ada posisi aktif dan Anda ingin mengambil arah BERLAWANAN → BOLEH HANYA bila news/sentimen TERKONFIRMASI jelas menunjukkan peralihan arah utk pair ini (contoh: berita bearish terkonfirmasi saat posisi LONG aktif, PLUS breakdown struktur/CHoCH selaras arah baru). Tanpa peralihan yang terkonfirmasi → JANGAN flip; hormati posisi aktif. Ini bukan izin stacking/rata-rata turun — flip hanya untuk reversal nyata.
-- COOLDOWN SELEKTIF (HANYA bila strategy_notes mendukung DAN data loss jelas menunjukkan over-trading pada pair itu): boleh membatasi frekuensi entry berulang pada pair yang sama dalam ~4 jam kecuali ada pergeseran struktur jelas. Ini SUATU PERTIMBANGAN, bukan larangan global — tidak pernah digunakan untuk menolak semua sinyal pair lain.
-- Jika confidence <70, output NO_TRADE.
+- COOLDOWN SELEKTIF (HANYA bila strategy_notes mendukung DAN data loss jelas menunjukkan over-trading pada pair itu): boleh mempertimbangkan mengurangi frekuensi entry berulang pada pair yang sama. Ini SUATU PERTIMBANGAN, bukan larangan global.
+- Jika confidence <70, output bias NO_TRADE.
 - Jangan ulangi pattern loss di atas (premature entry, SL terlalu ketat, blind entry di retracement).
-- Entry presisi, dekat price sekarang (max 0.2% deviasi), di zona kunci.
-- SL di belakang struktur, MINIMAL 1.5×ATR (Chandelier Exit style — 1.0×ATR terlalu ketat dan rentan false breakout/spike). Ideal: tepat di bawah nearest support (LONG) / di atas nearest resistance (SHORT) dengan buffer kecil, atau 1.5×ATR bila tidak ada zona S/R dekat. Maksimal ~3×ATR kecuali struktur S/R jelas lebih jauh.
-- TP di level struktural yang TEPAT: nearest resistance M15 atau H4 (LONG) / nearest support (SHORT), fib extension (1.272/1.414/1.618/2.0 dari daftar), order block berikutnya, liquidity pool, atau swing high/low. JANGAN asal menambah jarak TP hanya untuk menaikkan RR tanpa dasar struktur — TP harus punya konfirmasi level (S/R/Fib/liquidity/swing).
-- Jaga Risk-to-Reward ≥ 1.2. Jika SL diperlebar (struktur/ATR) menurunkan RR di bawah 1.2, pilih target struktural yang mengembalikan RR ≥ 1.2; bila tidak ada, pilih NO_TRADE.
+- invalidation_condition: tulis kondisi STRUKTURAL yang membatalkan bias (mis. close di bawah/atas level X, loss of structure/CHoCH berlawanan). Beri yang konkret.
 - Output JSON ONLY, no markdown.
 
 Format JSON:
 {
-  "direction": "LONG" | "SHORT" | "NO_TRADE",
-  "entry": number | null,
-  "sl": number | null,
-  "tp": number | null,
+  "bias": "LONG" | "SHORT" | "NO_TRADE",
   "confidence": number (0-100),
-  "reasoning": "string max 300 chars, jelaskan setup teknikal + bagaimana F&G/berita memengaruhi confidence + lesson applied",
-  "rr": number | null
+  "invalidation_condition": "string, kondisi struktural yang membatalkan bias",
+  "reasoning": "string max 300 chars, analisis kualitatif SMC/price action + pengaruh F&G/berita + lesson applied"
 }
 `;
 }

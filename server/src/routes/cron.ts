@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { fetchKlines, fetchCurrentPrice } from "../lib/binance.js";
-import { computeIndicators, computeSwingLevels, shouldCallLLM, computeAtr, computeSupportResistance, computeFibExtensions } from "../lib/indicators.js";
+import { computeIndicators, computeSwingLevels, localStructureFilter, computeAtr, computeSupportResistance, computeFibExtensions } from "../lib/indicators.js";
 import type { SRResult } from "../lib/indicators.js";
 import { checkDuplicate, getActivePositions } from "../lib/dedup.js";
 import { buildPrompt, callGemini, callGroundedGemini, extractJson } from "../lib/gemini.js";
@@ -45,7 +45,8 @@ router.post("/analyze", cronAuth, async (req, res) => {
     const lows = klines.map((k) => k.low);
 
     const ind = computeIndicators(closes, highs, lows);
-    const filter = shouldCallLLM(ind);
+    const sr15 = computeSupportResistance(closes, highs, lows, ind.atr ?? 0);
+    const filter = localStructureFilter(ind, highs, lows, sr15);
     const swing = computeSwingLevels(closes);
     const activePositions = filter.call ? await getActivePositions(symbol) : [];
 
@@ -55,7 +56,7 @@ router.post("/analyze", cronAuth, async (req, res) => {
       .select("*, outcomes!inner(result, hit)")
       .eq("outcomes.result", "LOSS")
       .order("created_at", { ascending: false })
-      .limit(10);
+      .limit(5);
 
     const { data: reflection } = await supabase
       .from("ai_reflections")
@@ -157,6 +158,32 @@ router.post("/analyze", cronAuth, async (req, res) => {
       isOverride = true;
     }
 
+    // Guard budget Gemini (kuota free-tier kecil): batasi panggilan harian & per jam.
+    // Mencegah kuota 20/hari model yang tersedia terbakar dalam 2 jam oleh call beruntun.
+    const MAX_DAY = Number(process.env.MAX_GEMINI_CALLS_PER_DAY) || 18;
+    const MAX_HOUR = Number(process.env.MAX_GEMINI_CALLS_PER_HOUR) || 6;
+    const sinceDay = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const sinceHour = new Date(Date.now() - 3600 * 1000).toISOString();
+    const [{ count: cDay }, { count: cHour }] = await Promise.all([
+      supabase
+        .from("signals")
+        .select("id", { count: "exact", head: true })
+        .gte("created_at", sinceDay)
+        .like("llm_model", "gemini%"),
+      supabase
+        .from("signals")
+        .select("id", { count: "exact", head: true })
+        .gte("created_at", sinceHour)
+        .like("llm_model", "gemini%"),
+    ]);
+    if ((cDay ?? 0) >= MAX_DAY || (cHour ?? 0) >= MAX_HOUR) {
+      return res.json({
+        skipped: true,
+        reason: `Gemini budget habis (${cDay ?? 0}/hari, ${cHour ?? 0}/jam; maks ${MAX_DAY}/${MAX_HOUR})`,
+        indicators: ind,
+      });
+    }
+
     // Data sentimen (Fear & Greed + berita) — gratis, tanpa API key terpisah.
     // Hanya diambil saat akan memanggil Gemini.
     const [fearGreedData, newsData] = await Promise.all([fetchFearGreed(), fetchCryptoNews(5)]);
@@ -177,8 +204,7 @@ router.post("/analyze", cronAuth, async (req, res) => {
     const utcHour = new Date().getUTCHours();
     const session = utcHour >= 7 && utcHour <= 20 ? "HIGH" : "LOW"; // London/NY high-liquidity
 
-    // Zona Support/Resistance dari OHLC (M15 + H4) + target Fibonacci extension.
-    const sr15 = computeSupportResistance(closes, highs, lows, ind.atr ?? 0);
+    // Zona Support/Resistance H4 + target Fibonacci extension (M15 sudah dihitung di atas).
     let sr4h: SRResult | null = null;
     try {
       const klines4hForSr = await fetchKlines(symbol, "4h", 200);
@@ -219,6 +245,7 @@ router.post("/analyze", cronAuth, async (req, res) => {
       resistance4h: sr4h?.nearestResistance?.price ?? null,
       support4hStrength: sr4h?.nearestSupport?.strength ?? null,
       resistance4hStrength: sr4h?.nearestResistance?.strength ?? null,
+      structuralEvent: filter.structuralEvent,
       activePositions,
       recentLosses: losses,
       weeklyLesson: reflection?.lesson || null,
@@ -229,47 +256,48 @@ router.post("/analyze", cronAuth, async (req, res) => {
     });
 
     const geminiResult = await callGemini(prompt);
-    const gem = geminiResult.signal;
+    const gem = geminiResult.signal; // GeminiBias { bias, confidence, invalidation_condition, reasoning }
 
-    // --- Risk Guard: SL floor (1.5×ATR + S/R) & TP re-target struktural (RR ≥ 1.2) ---
-    // Gemini bebas menentukan SL selama >= floor; SL terlalu ketat (<1.5×ATR / di dalam zona S/R)
-    // rentan false breakout. Bila SL diperlebar merusak RR, TP ditarget ulang ke level struktural
-    // (S/R M15/H4, Fib extension, swing). Tanpa target valid -> NO_TRADE.
-    let slAdjusted = false;
-    let tpAdjusted = false;
-    let riskNote = "";
-    let rejectReason: string | null = null;
-    let rrValue: number | null = null;
-    let origSl: number | null = null;
-    let origTp: number | null = null;
-    if (gem.direction === "LONG" || gem.direction === "SHORT") {
+    // --- Execution Engine (PRD Module C): semua angka Entry/SL/TP dihitung deterministik di TS. ---
+    // Gemini hanya memberi bias + confidence. Engine menentukan entry (harga pasar),
+    // SL floor (1.5×ATR + S/R, cap 3×ATR), TP struktural (RR ≥ 1.5), tag reject.
+    let direction: "LONG" | "SHORT" | "NO_TRADE" = gem.bias;
+    let entry: number | null = null;
+    let sl: number | null = null;
+    let tp: number | null = null;
+    let rrFinal: number | null = null;
+    let rejectTag: string | null = null;
+    let engineNote = "";
+
+    if (gem.bias === "LONG" || gem.bias === "SHORT") {
+      const isLong = gem.bias === "LONG";
       const atrVal = ind.atr;
-      if (atrVal && atrVal > 0 && gem.entry != null) {
-        const entry = gem.entry;
-        const isLong = gem.direction === "LONG";
+      if (!atrVal || atrVal <= 0) {
+        direction = "NO_TRADE";
+        engineNote = "ATR tidak tersedia, bias dibatalkan oleh engine.";
+      } else if (gem.confidence < 70) {
+        direction = "NO_TRADE";
+        engineNote = `Confidence ${gem.confidence} < 70, bias dibatalkan oleh engine.`;
+      } else {
+        entry = ind.price; // Keputusan A: entry = harga pasar saat ini
+        const entryPrice = entry;
         const nearZone = isLong ? sr15.nearestSupport : sr15.nearestResistance;
         const structureDist = nearZone
           ? isLong
-            ? Math.max(0, entry - (nearZone.price - 0.25 * atrVal))
-            : Math.max(0, (nearZone.price + 0.25 * atrVal) - entry)
+            ? Math.max(0, entryPrice - (nearZone.price - 0.25 * atrVal))
+            : Math.max(0, (nearZone.price + 0.25 * atrVal) - entryPrice)
           : 0;
-        // Floor SL: minimal 1.5×ATR; di belakang zona S/R terdekat jika lebih jauh.
+        // SL Floor: minimal 1.5×ATR; di belakang zona S/R terdekat.
         let minSlDist = Math.max(1.5 * atrVal, structureDist);
-        // Cap 3×ATR: diizinkan melebihi HANYA jika struktur S/R membenarkan (structureDist).
-        if (minSlDist > 3 * atrVal && structureDist <= 3 * atrVal) minSlDist = 3 * atrVal;
-
-        const curDist = gem.sl == null ? 0 : isLong ? entry - gem.sl : gem.sl - entry;
-        origSl = gem.sl;
-        origTp = gem.tp;
-        if (gem.sl == null || curDist < minSlDist) {
-          gem.sl = isLong ? entry - minSlDist : entry + minSlDist;
-          slAdjusted = true;
-        }
-        const risk = Math.abs(entry - gem.sl);
-        rrValue = gem.tp != null && risk > 0 ? Math.abs(gem.tp - entry) / risk : 0;
-
-        if (rrValue < 1.2) {
-          // Cari target struktural terdekat yang mengembalikan RR ≥ 1.2.
+        // SL Cap: jika floor > 3×ATR tanpa struktur ekstrem -> batal (SL_EXCEEDS_CAP).
+        if (minSlDist > 3 * atrVal && structureDist <= 3 * atrVal) {
+          rejectTag = "SL_EXCEEDS_CAP";
+          direction = "NO_TRADE";
+          engineNote = `SL floor ${minSlDist.toFixed(2)} (> 3×ATR ${(3 * atrVal).toFixed(2)}) tanpa konfirmasi struktur ekstrem.`;
+        } else {
+          sl = isLong ? entryPrice - minSlDist : entryPrice + minSlDist;
+          const risk = Math.abs(entryPrice - sl);
+          // TP: target struktural terdekat yang menghasilkan RR ≥ 1.5.
           const ext = isLong ? fibExt.up : fibExt.down;
           const candidates: { price: number | null; label: string }[] = isLong
             ? [
@@ -294,42 +322,35 @@ router.post("/analyze", cronAuth, async (req, res) => {
             .filter(
               (c) =>
                 c.price != null &&
-                (isLong ? c.price > entry : c.price < entry) &&
-                Math.abs(c.price - entry) / risk >= 1.2
+                (isLong ? (c.price as number) > entryPrice : (c.price as number) < entryPrice) &&
+                Math.abs((c.price as number) - entryPrice) / risk >= 1.5
             )
-            .sort((a, b) => Math.abs((a.price as number) - entry) - Math.abs((b.price as number) - entry));
+            .sort((a, b) => Math.abs((a.price as number) - entryPrice) - Math.abs((b.price as number) - entryPrice));
 
           if (valid.length > 0) {
-            gem.tp = valid[0].price as number;
-            tpAdjusted = true;
-            riskNote = `TP ditarget ulang ke ${valid[0].label} (${gem.tp}) agar RR≥1.2 (SL floor ${minSlDist.toFixed(2)} = ${(minSlDist / atrVal).toFixed(1)}×ATR).`;
+            tp = valid[0].price as number;
+            rrFinal = Math.abs(tp - entryPrice) / risk;
+            engineNote = `SL=${sl.toFixed(4)} (${(minSlDist / atrVal).toFixed(1)}×ATR), TP=${valid[0].label}@${tp.toFixed(4)}, RR=${rrFinal.toFixed(2)}.`;
           } else {
-            rejectReason = `RR ${rrValue.toFixed(2)} < 1.2 setelah SL floor ${minSlDist.toFixed(2)} (${(minSlDist / atrVal).toFixed(1)}×ATR); tidak ada target struktural (S/R M15/H4, Fib ext, swing) yang memulihkan RR. Entry dibatalkan.`;
+            rejectTag = "RR_FILTER_FAILED";
+            direction = "NO_TRADE";
+            engineNote = `Tidak ada target struktural (S/R M15/H4, Fib ext, swing) dengan RR ≥ 1.5.`;
           }
-        } else if (slAdjusted) {
-          riskNote = `SL diperlebar ke floor (${minSlDist.toFixed(2)} = ${(minSlDist / atrVal).toFixed(1)}×ATR + S/R) agar tahan false breakout; RR ${rrValue.toFixed(2)} tetap terjaga.`;
         }
       }
     }
 
-    // Jika risk guard menolak -> ubah jadi NO_TRADE transparan (bukan suppress).
-    if (rejectReason) {
-      gem.direction = "NO_TRADE";
-      gem.entry = null;
-      gem.sl = null;
-      gem.tp = null;
-      gem.reasoning = `${gem.reasoning}\n[RR-REJECT] ${rejectReason}`;
-    }
+    if (engineNote) engineNote = `\n[ENGINE] ${engineNote}`;
 
     // Validate RR if trade
     let status: string = "closed";
-    let llmModel = rejectReason ? "rr-filter" : geminiResult.model;
-    let reasoning = gem.reasoning;
+    let llmModel = geminiResult.model;
+    let reasoning = rejectTag ? `${gem.reasoning}\n[${rejectTag}] ${engineNote}` : `${gem.reasoning}${engineNote}`;
 
-    if (gem.direction !== "NO_TRADE") {
+    if (direction !== "NO_TRADE") {
       status = "active";
       // Anti-spam: suppress duplicate entry close in price/time to an existing signal
-      const dup = await checkDuplicate(symbol, gem.direction, gem.entry, ind.atr);
+      const dup = await checkDuplicate(symbol, direction, entry, ind.atr);
       if (dup.duplicate) {
         status = "suppressed";
         llmModel = "dedup-filter";
@@ -337,25 +358,24 @@ router.post("/analyze", cronAuth, async (req, res) => {
       }
     }
 
-    // Catatan risk guard di reasoning (transparan di dashboard & learning).
-    if (slAdjusted || tpAdjusted) reasoning = `${reasoning}\n[RISK-GUARD] ${riskNote}`;
-
     const srSnapshot = {
       support15: sr15.nearestSupport ? { price: sr15.nearestSupport.price, strength: sr15.nearestSupport.strength } : null,
       resistance15: sr15.nearestResistance ? { price: sr15.nearestResistance.price, strength: sr15.nearestResistance.strength } : null,
       support4h: sr4h?.nearestSupport ? { price: sr4h.nearestSupport.price, strength: sr4h.nearestSupport.strength } : null,
       resistance4h: sr4h?.nearestResistance ? { price: sr4h.nearestResistance.price, strength: sr4h.nearestResistance.strength } : null,
     };
-    const riskSnapshot = {
+    const engineSnapshot = {
       atr: ind.atr,
       sr: srSnapshot,
       fibExt,
-      rr: rrValue,
-      slAdjusted,
-      tpAdjusted,
-      rejected: !!rejectReason,
-      origSl,
-      origTp,
+      rr_final: rrFinal,
+      entry_source: direction === "NO_TRADE" ? null : "market",
+      tag: rejectTag,
+      structuralEvent: filter.structuralEvent,
+      bias: gem.bias,
+      confidence: gem.confidence,
+      invalidation_condition: gem.invalidation_condition || null,
+      gemini_reasoning: gem.reasoning,
     };
 
     const { data, error } = await supabase
@@ -363,18 +383,16 @@ router.post("/analyze", cronAuth, async (req, res) => {
       .insert({
         pair: symbol,
         timeframe: interval,
-        direction: gem.direction,
-        entry: gem.entry,
-        sl: gem.sl,
-        tp: gem.tp,
+        direction,
+        entry,
+        sl,
+        tp,
         confidence: gem.confidence,
         reasoning,
         llm_model: llmModel,
         status,
         raw_prompt: prompt,
-        raw_response: isOverride
-          ? { ...gem, ...riskSnapshot, override: true }
-          : { ...gem, ...riskSnapshot },
+        raw_response: isOverride ? { ...engineSnapshot, override: true } : engineSnapshot,
       })
       .select()
       .single();
@@ -383,7 +401,7 @@ router.post("/analyze", cronAuth, async (req, res) => {
 
     // Batasi penyimpanan NO_TRADE: hapus yang paling lama jika melebihi cap,
     // sehingga hanya ~KEEP_NO_TRADE terbaru yang tersimpan.
-    if (gem.direction === "NO_TRADE") {
+    if (direction === "NO_TRADE") {
       try {
         const { count } = await supabase
           .from("signals")
@@ -459,12 +477,19 @@ router.post("/evaluate", cronAuth, async (req, res) => {
 
       let hit: "SL" | "TP" | null = null;
 
+      // Slippage/spread simetris 0.05% (PRD Module D).
+      // SL: trigger di level nominal, EXIT lebih buruk (effSl).
+      // TP: TRIGGER harus menembus level efektif (effTp) agar teranggap filled, EXIT di effTp.
+      const slip = 0.0005;
+      const effSl = sig.direction === "LONG" ? sig.sl * (1 - slip) : sig.sl * (1 + slip);
+      const effTp = sig.direction === "LONG" ? sig.tp * (1 + slip) : sig.tp * (1 - slip);
+
       // Sentuhan level dari high/low candle (termasuk candle yang sedang berjalan).
       const firstSl = candles.find((k) =>
         sig.direction === "LONG" ? k.low <= sig.sl : k.high >= sig.sl
       );
       const firstTp = candles.find((k) =>
-        sig.direction === "LONG" ? k.high >= sig.tp : k.low <= sig.tp
+        sig.direction === "LONG" ? k.high >= effTp : k.low <= effTp
       );
       // Jika SL & TP sama-sama tersentuh: pakai yang candle-nya lebih awal;
       // candle sama -> SL menang (konservatif).
@@ -475,16 +500,16 @@ router.post("/evaluate", cronAuth, async (req, res) => {
       if (!hit) {
         if (sig.direction === "LONG") {
           if (price <= sig.sl) hit = "SL";
-          else if (price >= sig.tp) hit = "TP";
+          else if (price >= effTp) hit = "TP";
         } else if (sig.direction === "SHORT") {
           if (price >= sig.sl) hit = "SL";
-          else if (price <= sig.tp) hit = "TP";
+          else if (price <= effTp) hit = "TP";
         }
       }
 
       if (hit) {
-        // Exit di harga level yang tersentuh (isi stop order), bukan harga live.
-        const exitPrice = hit === "SL" ? sig.sl : sig.tp;
+        // Exit di level EFEKTIF (sudah termasuk slippage/spread), bukan level nominal.
+        const exitPrice = hit === "SL" ? effSl : effTp;
         const result: "WIN" | "LOSS" = hit === "SL" ? "LOSS" : "WIN";
         if (existingSet.has(sig.id)) {
           // Sudah dievaluasi sebelumnya (penutupan sempat gagal) -> cukup tutup, tanpa outcome ganda.
@@ -528,7 +553,7 @@ router.post("/evaluate", cronAuth, async (req, res) => {
           .update({ status: "closed" })
           .eq("id", s.id);
         if (closeErr) console.error("evaluate: close stale already-evaluated signal failed", s.id, closeErr.message);
-        results.push({ id: s.id, hit: "TIMEOUT", result: "BE", skipped: "already-evaluated" });
+        results.push({ id: s.id, hit: "EXPIRED_BE", result: "BE", skipped: "already-evaluated" });
         continue;
       }
       const { error: outErr } = await supabase.from("outcomes").insert({
@@ -537,7 +562,7 @@ router.post("/evaluate", cronAuth, async (req, res) => {
         exit_price: price,
         pnl_pips: 0,
         pnl_r: 0,
-        hit: "TIMEOUT",
+        hit: "EXPIRED_BE",
       });
       if (outErr) throw outErr;
       const { error: closeErr } = await supabase
@@ -545,7 +570,7 @@ router.post("/evaluate", cronAuth, async (req, res) => {
         .update({ status: "closed" })
         .eq("id", s.id);
       if (closeErr) console.error("evaluate: close stale signal failed", s.id, closeErr.message);
-      results.push({ id: s.id, hit: "TIMEOUT", result: "BE" });
+      results.push({ id: s.id, hit: "EXPIRED_BE", result: "BE" });
     }
 
     res.json({ price, evaluated: results.length, results });

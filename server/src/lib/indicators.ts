@@ -200,19 +200,67 @@ export function computeFibExtensions(swingHigh: number, swingLow: number): FibEx
   };
 }
 
-export function shouldCallLLM(ind: IndicatorResult): { call: boolean; reason: string } {
-  // Pre-filter tuned for 15m sniping
+export interface StructureFilterResult {
+  call: boolean;
+  reason: string;
+  structuralEvent: "SWEEP_BELOW" | "SWEEP_ABOVE" | null;
+}
+
+// Local Market Structure Filter (PRD Module A): menggantikan pre-filter RSI kaku.
+// Hanya lanjut jika (1) volatilitas cukup (range candle terakhir >= 0.5×ATR) dan
+// (2) ada structural event (sweep/break level kunci) dalam beberapa candle terakhir.
+export function localStructureFilter(
+  ind: IndicatorResult,
+  highs: number[],
+  lows: number[],
+  sr15: SRResult
+): StructureFilterResult {
   if (ind.rsi === null || ind.ema50 === null || ind.ema200 === null) {
-    return { call: false, reason: "Not enough data for indicators" };
+    return { call: false, reason: "Not enough data for indicators", structuralEvent: null };
   }
-  // If RSI in neutral and price far from EMAs -> no setup
-  const distFromEma = Math.abs(ind.price - ind.ema50) / ind.price;
-  if (ind.rsi > 45 && ind.rsi < 55 && distFromEma > 0.008) {
-    return { call: false, reason: `RSI neutral ${ind.rsi.toFixed(1)} and price far from EMA50` };
+  if (ind.atr === null || ind.atr <= 0) {
+    return { call: false, reason: "ATR not available", structuralEvent: null };
   }
-  // Avoid calling on extreme sideways with low ATR (15m ATR ~0.05-0.1%)
-  if (ind.atr !== null && ind.atr / ind.price < 0.0006) {
-    return { call: false, reason: "ATR too low, no volatility" };
+
+  // 1) Volatilitas minimal: range candle 15m terakhir >= 0.5×ATR
+  const lastRange = highs[highs.length - 1] - lows[lows.length - 1];
+  if (lastRange < 0.5 * ind.atr) {
+    return {
+      call: false,
+      reason: `Volatilitas rendah (range ${lastRange.toFixed(4)} < 0.5×ATR ${(0.5 * ind.atr).toFixed(4)})`,
+      structuralEvent: null,
+    };
   }
-  return { call: true, reason: "Setup valid" };
+
+  // 2) Structural event (HARD GATE): dalam 5 candle terakhir, harga sweep/break
+  //    swing (jendela 20 candle sebelumnya) atau tembus zona S/R terdekat.
+  const lookback = 5;
+  const swingWindow = 20;
+  const start = Math.max(0, lows.length - lookback);
+  const swingStart = Math.max(0, start - swingWindow);
+  const priorLows = lows.slice(swingStart, start);
+  const priorHighs = highs.slice(swingStart, start);
+  const swingLow = priorLows.length ? Math.min(...priorLows) : null;
+  const swingHigh = priorHighs.length ? Math.max(...priorHighs) : null;
+
+  for (let i = start; i < lows.length; i++) {
+    if (swingLow !== null && lows[i] < swingLow) {
+      return { call: true, reason: "Setup valid (sweep likuiditas di bawah struktur)", structuralEvent: "SWEEP_BELOW" };
+    }
+    if (swingHigh !== null && highs[i] > swingHigh) {
+      return { call: true, reason: "Setup valid (sweep/break di atas struktur)", structuralEvent: "SWEEP_ABOVE" };
+    }
+  }
+  const price = ind.price;
+  if (sr15.nearestResistance && price > sr15.nearestResistance.maxPrice) {
+    return { call: true, reason: "Setup valid (break resistance M15)", structuralEvent: "SWEEP_ABOVE" };
+  }
+  if (sr15.nearestSupport && price < sr15.nearestSupport.minPrice) {
+    return { call: true, reason: "Setup valid (break support M15)", structuralEvent: "SWEEP_BELOW" };
+  }
+  return {
+    call: false,
+    reason: "Tidak ada structural event (sweep/break level kunci) dalam 5 candle terakhir",
+    structuralEvent: null,
+  };
 }

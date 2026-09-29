@@ -7,3 +7,4 @@ dist
 *.log
 server/dist
 pg_cron.sql
+Update.md
